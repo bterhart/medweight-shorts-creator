@@ -1,0 +1,28 @@
+{
+  "name": "Waterway Narrator - Job Status",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "staticData": null,
+  "nodes": [
+    { "id": "status-webhook", "name": "Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 0],
+      "parameters": { "httpMethod": "GET", "path": "jobs/:jobId/status", "responseMode": "responseNode", "options": {} } },
+
+    { "id": "read-job-json", "name": "Read job.json", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [260, 0],
+      "parameters": { "operation": "read", "fileSelector": "=data/jobs/{{$json.params.jobId}}/job.json", "options": { "dataPropertyName": "data" } } },
+
+    { "id": "parse-job-json", "name": "Parse job.json", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [520, 0],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const buf = await this.helpers.binaryToBuffer($input.item.binary.data);\nconst job = JSON.parse(buf.toString('utf-8'));\nreturn [{ json: { job } }];" } },
+
+    { "id": "respond-status", "name": "Respond Status", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [780, 0],
+      "parameters": { "respondWith": "json", "responseBody": "={{$json.job}}" } },
+
+    { "id": "job-not-found", "name": "Respond Not Found", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [520, 180],
+      "parameters": { "respondWith": "json", "responseCode": 404, "responseBody": "={{ { error: 'job not found' } }}" } }
+  ],
+  "connections": {
+    "Webhook": { "main": [[ { "node": "Read job.json", "type": "main", "index": 0 } ]] },
+    "Read job.json": { "main": [[ { "node": "Parse job.json", "type": "main", "index": 0 } ]] },
+    "Parse job.json": { "main": [[ { "node": "Respond Status", "type": "main", "index": 0 } ]] }
+  }
+}

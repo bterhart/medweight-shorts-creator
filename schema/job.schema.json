@@ -1,0 +1,213 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waterway-narrator/schema/job.schema.json",
+  "title": "Job",
+  "description": "Persisted state for one transcript+slides video job. Stored on disk at data/jobs/<jobId>/job.json and treated as the single source of truth for both the n8n workflows and the UI's status polling.",
+  "type": "object",
+  "required": ["jobId", "createdAt", "updatedAt", "phase", "step", "params", "sources"],
+  "properties": {
+    "jobId": { "type": "string", "format": "uuid" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+
+    "phase": {
+      "type": "string",
+      "description": "Coarse pipeline phase. 'prepare' covers everything up to and including TTS synthesis (the paid/slow steps). 'ready_for_render' is the dry-run checkpoint. 'rendering'/'done' cover the local, free, repeatable video-assembly step.",
+      "enum": ["prepare", "ready_for_render", "rendering", "done", "failed"]
+    },
+    "step": {
+      "type": "string",
+      "description": "Fine-grained step within the current phase, for UI progress display.",
+      "enum": [
+        "queued",
+        "saving_inputs",
+        "parsing_srt",
+        "extracting_pdfs",
+        "uploading_slides_to_manus",
+        "aligning",
+        "condensing_narration",
+        "resolving_voice",
+        "synthesizing_audio",
+        "probing_durations",
+        "ready_for_render",
+        "rendering",
+        "done"
+      ]
+    },
+    "error": {
+      "type": ["object", "null"],
+      "properties": {
+        "step": { "type": "string" },
+        "message": { "type": "string" },
+        "detail": { "type": "string" }
+      }
+    },
+
+    "params": {
+      "type": "object",
+      "description": "Everything the UI submits at job creation. Immutable for phase 1; transition/aspect fields may be edited and re-applied for a cheap re-render without redoing phase 1.",
+      "required": ["targetDurationSeconds", "voice", "transition"],
+      "properties": {
+        "targetDurationSeconds": {
+          "type": "integer",
+          "enum": [45, 90, 180, 300],
+          "description": "Snap points for 45s / 90s / 3min / 5min. A raw integer is allowed too if the UI later exposes a custom-seconds field."
+        },
+        "narrationStyle": {
+          "type": "string",
+          "description": "Free-text tone/expertise instruction for the condensation prompt, e.g. 'explain like a park ranger, plain language' or 'academic hydrology lecture'. Distinct from voice."
+        },
+        "voice": {
+          "type": "object",
+          "required": ["mode"],
+          "properties": {
+            "mode": { "type": "string", "enum": ["preset", "custom"] },
+            "presetVoiceId": {
+              "type": ["string", "null"],
+              "description": "ElevenLabs voice_id from the curated dropdown. Required when mode=preset."
+            },
+            "customDescription": {
+              "type": ["string", "null"],
+              "description": "Freeform voice description for ElevenLabs Voice Design, e.g. '50s male, Scottish accent, warm documentary narrator'. Required when mode=custom."
+            },
+            "resolvedVoiceId": {
+              "type": ["string", "null"],
+              "description": "Filled in during 'resolving_voice'. For mode=custom this is cached in data/voice-cache.json keyed by a hash of customDescription so repeat runs with the same description don't regenerate a voice."
+            }
+          }
+        },
+        "transition": {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "type": "string", "enum": ["cut", "fade", "crossfade", "wipe", "slide"] },
+            "transitionSeconds": { "type": "number", "default": 0.75, "minimum": 0.1, "maximum": 3 },
+            "minSlideSeconds": {
+              "type": "number",
+              "default": 3.0,
+              "description": "Floor on how long a slide is held even if its narration audio is shorter than this."
+            }
+          }
+        },
+        "aspectRatio": { "type": "string", "enum": ["16:9", "9:16", "1:1"], "default": "16:9" },
+        "resolution": { "type": "string", "default": "1920x1080" },
+        "captions": { "type": "boolean", "default": false }
+      }
+    },
+
+    "sources": {
+      "type": "object",
+      "required": ["srt", "pdfs"],
+      "properties": {
+        "srt": {
+          "type": "object",
+          "properties": {
+            "filename": { "type": "string" },
+            "path": { "type": "string" },
+            "cueCount": { "type": "integer" },
+            "durationSeconds": { "type": "number" },
+            "fullText": { "type": "string" }
+          }
+        },
+        "pdfs": {
+          "type": "array",
+          "description": "Exactly one entry must have role='primary'. UI enforces this with a radio control; a single uploaded PDF is auto-assigned primary.",
+          "items": {
+            "type": "object",
+            "required": ["id", "filename", "path", "role", "order"],
+            "properties": {
+              "id": { "type": "string", "description": "Stable slug, e.g. 'pdf-1'." },
+              "filename": { "type": "string" },
+              "path": { "type": "string" },
+              "role": { "type": "string", "enum": ["primary", "supplementary"] },
+              "order": { "type": "integer", "description": "User-set drag order among multiple PDFs; primary need not be order 0." },
+              "pageCount": { "type": "integer" }
+            }
+          }
+        }
+      }
+    },
+
+    "slides": {
+      "type": "array",
+      "description": "Flattened, ordered-by-extraction list of every page across every PDF (pre-alignment). Populated during 'extracting_pdfs'.",
+      "items": {
+        "type": "object",
+        "required": ["slideId", "pdfId", "pageNumber", "imagePath"],
+        "properties": {
+          "slideId": { "type": "string", "description": "e.g. 'pdf-1-p003'." },
+          "pdfId": { "type": "string" },
+          "pageNumber": { "type": "integer" },
+          "imagePath": { "type": "string" },
+          "textPath": { "type": "string", "description": "pdftotext output for this page, used as supplementary context alongside the image itself." },
+          "manusFileId": { "type": ["string", "null"], "description": "File ID after upload to Manus Files API." }
+        }
+      }
+    },
+
+    "alignment": {
+      "type": "array",
+      "description": "Manus's vision+text alignment output: which slide(s), in what order, map to which part of the transcript. Populated during 'aligning'.",
+      "items": {
+        "type": "object",
+        "required": ["sequenceIndex", "slideId", "transcriptExcerpt"],
+        "properties": {
+          "sequenceIndex": { "type": "integer" },
+          "slideId": { "type": "string" },
+          "transcriptExcerpt": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "notes": { "type": "string", "description": "Manus's rationale, kept for the human review UI, e.g. 'chart matches narration about flow rates'." }
+        }
+      }
+    },
+
+    "narration": {
+      "type": "array",
+      "description": "Condensed per-segment script sized to the target duration. Populated during 'condensing_narration'. This plus 'slides' is the human-reviewable 'script' the dry-run switch stops at.",
+      "items": {
+        "type": "object",
+        "required": ["sequenceIndex", "slideId", "script"],
+        "properties": {
+          "sequenceIndex": { "type": "integer" },
+          "slideId": { "type": "string" },
+          "script": { "type": "string" },
+          "estimatedWords": { "type": "integer" },
+          "estimatedSeconds": { "type": "number" }
+        }
+      }
+    },
+
+    "audio": {
+      "type": "array",
+      "description": "One synthesized clip per narration segment, in the same order. Populated during 'synthesizing_audio' / 'probing_durations'. Reaching phase=ready_for_render requires this array to be fully populated with real durations.",
+      "items": {
+        "type": "object",
+        "required": ["sequenceIndex", "path", "durationSeconds"],
+        "properties": {
+          "sequenceIndex": { "type": "integer" },
+          "path": { "type": "string" },
+          "durationSeconds": { "type": "number" }
+        }
+      }
+    },
+
+    "render": {
+      "type": "object",
+      "description": "Populated by the (separate, repeatable) Phase 2 render workflow. Not touched by Phase 1.",
+      "properties": {
+        "renderedAt": { "type": ["string", "null"], "format": "date-time" },
+        "outputPath": { "type": ["string", "null"] },
+        "outputUrl": { "type": ["string", "null"] },
+        "renderCount": { "type": "integer", "default": 0, "description": "Incremented each time phase 2 re-renders with different transition params, so old outputs can be kept or pruned." }
+      }
+    },
+
+    "manus": {
+      "type": "object",
+      "properties": {
+        "taskId": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

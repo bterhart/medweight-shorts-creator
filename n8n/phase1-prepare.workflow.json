@@ -1,0 +1,204 @@
+{
+  "name": "Waterway Narrator - Phase 1 (Prepare)",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "staticData": null,
+  "nodes": [
+    { "id": "webhook", "name": "Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 400],
+      "parameters": { "httpMethod": "POST", "path": "jobs", "responseMode": "responseNode", "options": {} } },
+
+    { "id": "build-job-record", "name": "Build Job Record", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [260, 400],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const crypto = require('crypto');\nconst now = new Date().toISOString();\nconst body = $input.item.json.body || $input.item.json;\nconst jobId = crypto.randomUUID();\n\nconst pdfMeta = (body.pdfs || []).map((p, i) => ({\n  id: `pdf-${i + 1}`,\n  filename: p.filename,\n  path: `data/jobs/${jobId}/input/pdf-${i + 1}.pdf`,\n  role: p.role,\n  order: p.order ?? i,\n  binaryKey: p.binaryKey\n}));\n\nconst job = {\n  jobId,\n  createdAt: now,\n  updatedAt: now,\n  phase: 'prepare',\n  step: 'saving_inputs',\n  error: null,\n  params: {\n    targetDurationSeconds: body.targetDurationSeconds,\n    narrationStyle: body.narrationStyle || '',\n    voice: {\n      mode: body.voice.mode,\n      presetVoiceId: body.voice.presetVoiceId || null,\n      customDescription: body.voice.customDescription || null,\n      resolvedVoiceId: null\n    },\n    transition: {\n      type: body.transition.type,\n      transitionSeconds: body.transition.transitionSeconds ?? 0.75,\n      minSlideSeconds: body.transition.minSlideSeconds ?? 3.0\n    },\n    aspectRatio: body.aspectRatio || '16:9',\n    resolution: body.resolution || '1920x1080',\n    captions: !!body.captions\n  },\n  sources: {\n    srt: {\n      filename: body.srtFilename,\n      path: `data/jobs/${jobId}/input/transcript.srt`,\n      cueCount: null,\n      durationSeconds: null,\n      fullText: null\n    },\n    pdfs: pdfMeta\n  },\n  slides: [],\n  alignment: [],\n  narration: [],\n  audio: [],\n  render: { renderedAt: null, outputPath: null, outputUrl: null, renderCount: 0 },\n  manus: { taskId: null, status: null }\n};\n\nreturn [{ json: { job }, binary: $input.item.binary }];" } },
+
+    { "id": "ack-job", "name": "Ack Job", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [520, 220],
+      "parameters": { "respondWith": "json", "responseBody": "={{ { jobId: $('Build Job Record').item.json.job.jobId, phase: $('Build Job Record').item.json.job.phase, step: $('Build Job Record').item.json.job.step } }}" } },
+
+    { "id": "prepare-cp0", "name": "Prepare CP0", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [520, 400],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Build Job Record').item.json.job;\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(JSON.stringify(job, null, 2)), 'job.json', 'application/json');\nreturn [{ json: { job, jobJsonPath: `data/jobs/${job.jobId}/job.json` }, binary: { jobJson: binary } }];" } },
+    { "id": "save-cp0", "name": "Save CP0", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [780, 400],
+      "parameters": { "operation": "write", "fileName": "={{$json.jobJsonPath}}", "dataPropertyName": "jobJson", "options": {} } },
+
+    { "id": "ensure-dirs", "name": "Ensure Job Dirs", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1, "position": [520, 580],
+      "parameters": { "command": "=mkdir -p data/jobs/{{$('Build Job Record').item.json.job.jobId}}/{input,slides,audio,output}" } },
+
+    { "id": "fan-out-input-files", "name": "Fan Out Input Files", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [780, 580],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Build Job Record').item.json.job;\nconst binary = $('Build Job Record').item.binary;\n\nconst files = [\n  { targetPath: job.sources.srt.path, binaryKey: 'srt' },\n  ...job.sources.pdfs.map(p => ({ targetPath: p.path, binaryKey: p.binaryKey }))\n];\n\nreturn files.map(f => ({ json: { targetPath: f.targetPath }, binary: { data: binary[f.binaryKey] } }));" } },
+
+    { "id": "save-input-files", "name": "Save Input Files", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [1040, 580],
+      "parameters": { "operation": "write", "fileName": "={{$json.targetPath}}", "dataPropertyName": "data", "options": {} } },
+
+    { "id": "rejoin-after-save", "name": "Rejoin After Save", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1300, 580],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "return [{ json: { job: $('Build Job Record').item.json.job } }];" } },
+
+    { "id": "parse-srt", "name": "Parse SRT", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1560, 580],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const buf = await this.helpers.binaryToBuffer($('Build Job Record').item.binary.srt);\nconst text = buf.toString('utf-8');\n\nconst cues = [];\nconst blocks = text.replace(/\\r/g, '').split(/\\n\\n+/).filter(Boolean);\nfor (const block of blocks) {\n  const lines = block.split('\\n');\n  const timeLine = lines.find(l => l.includes('-->'));\n  if (!timeLine) continue;\n  const textLines = lines.slice(lines.indexOf(timeLine) + 1);\n  cues.push({ time: timeLine.trim(), text: textLines.join(' ').trim() });\n}\n\nconst fullText = cues.map(c => c.text).join(' ');\nconst toSeconds = (t) => {\n  const [h, m, s] = t.split(':');\n  const [sec, ms] = s.split(',');\n  return (+h) * 3600 + (+m) * 60 + (+sec) + (+ms) / 1000;\n};\nconst lastCue = cues[cues.length - 1];\nconst durationSeconds = lastCue ? toSeconds(lastCue.time.split(' --> ')[1]) : 0;\n\nconst job = $('Build Job Record').item.json.job;\njob.sources.srt.cueCount = cues.length;\njob.sources.srt.durationSeconds = durationSeconds;\njob.sources.srt.fullText = fullText;\njob.step = 'extracting_pdfs';\njob.updatedAt = new Date().toISOString();\n\nreturn [{ json: { job } }];" } },
+
+    { "id": "build-extraction-command", "name": "Build Extraction Command", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1820, 580],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Parse SRT').item.json.job;\nconst jobDir = `data/jobs/${job.jobId}`;\n\nconst parts = job.sources.pdfs.map(pdf => `\npdf=\"${pdf.path}\"\nprefix=\"${jobDir}/slides/${pdf.id}-p\"\npages=$(pdfinfo \"$pdf\" | awk '/^Pages:/{print $2}')\npdftoppm -png -r 150 \"$pdf\" \"$prefix\"\nfor i in $(seq 1 \"$pages\"); do\n  pnum=$(printf \"%03d\" \"$i\")\n  pdftotext -layout -f \"$i\" -l \"$i\" \"$pdf\" \"${prefix}${pnum}.txt\"\ndone`.trim());\n\nreturn [{ json: { job, command: parts.join('\\n') } }];" } },
+
+    { "id": "extract-pdf-pages", "name": "Extract PDF Pages", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1, "position": [2080, 580],
+      "parameters": { "command": "={{$json.command}}" } },
+
+    { "id": "list-slide-files", "name": "List Slide Files", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1, "position": [2340, 580],
+      "parameters": { "command": "=ls -1 data/jobs/{{$('Parse SRT').item.json.job.jobId}}/slides/*.png" } },
+
+    { "id": "build-slides-index", "name": "Build Slides Index", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [2600, 580],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Parse SRT').item.json.job;\nconst stdout = $input.item.json.stdout || '';\nconst files = stdout.split('\\n').map(l => l.trim()).filter(Boolean);\n\nconst slides = files.map(pngPath => {\n  const match = pngPath.match(/\\/(pdf-\\d+)-p0*(\\d+)\\.png$/);\n  if (!match) return null;\n  const [, pdfId, pageNumStr] = match;\n  const pageNumber = parseInt(pageNumStr, 10);\n  const pnum = String(pageNumber).padStart(3, '0');\n  return {\n    slideId: `${pdfId}-p${pnum}`,\n    pdfId,\n    pageNumber,\n    imagePath: pngPath,\n    textPath: pngPath.replace(/-p0*\\d+\\.png$/, `-p${pnum}.txt`),\n    manusFileId: null\n  };\n}).filter(Boolean)\n  .sort((a, b) => (a.pdfId === b.pdfId ? a.pageNumber - b.pageNumber : a.pdfId.localeCompare(b.pdfId)));\n\njob.slides = slides;\njob.step = 'uploading_slides_to_manus';\njob.updatedAt = new Date().toISOString();\n\nreturn [{ json: { job } }];" } },
+
+    { "id": "prepare-cp1", "name": "Prepare CP1", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [2860, 420],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Build Slides Index').item.json.job;\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(JSON.stringify(job, null, 2)), 'job.json', 'application/json');\nreturn [{ json: { job, jobJsonPath: `data/jobs/${job.jobId}/job.json` }, binary: { jobJson: binary } }];" } },
+    { "id": "save-cp1", "name": "Save CP1", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [3120, 420],
+      "parameters": { "operation": "write", "fileName": "={{$json.jobJsonPath}}", "dataPropertyName": "jobJson", "options": {} } },
+
+    { "id": "slides-to-items", "name": "Slides To Items", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [2860, 580],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Build Slides Index').item.json.job;\nreturn job.slides.map(s => ({ json: { job, slide: s } }));" } },
+
+    { "id": "read-slide-image", "name": "Read Slide Image", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [3120, 580],
+      "parameters": { "operation": "read", "fileSelector": "={{$json.slide.imagePath}}", "options": { "dataPropertyName": "data" } } },
+
+    { "id": "upload-slide-image", "name": "Upload Slide Image", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [3380, 580],
+      "parameters": { "method": "POST", "url": "https://api.manus.ai/v2/files", "sendBody": true, "contentType": "multipart-form-data", "bodyParameters": { "parameters": [ { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" } ] }, "options": {} },
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ME", "name": "Manus API" } } },
+
+    { "id": "tag-upload-result", "name": "Tag Upload Result", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [3640, 580],
+      "parameters": { "mode": "runOnceForEachItem", "jsCode": "const slide = $('Slides To Items').item.json.slide;\nreturn { json: { slideId: slide.slideId, file_id: $input.item.json.file_id } };" } },
+
+    { "id": "collect-manus-file-ids", "name": "Collect Manus File Ids", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [3900, 580],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Build Slides Index').item.json.job;\nconst results = $input.all();\nconst idBySlide = {};\nfor (const r of results) idBySlide[r.json.slideId] = r.json.file_id;\njob.slides = job.slides.map(s => ({ ...s, manusFileId: idBySlide[s.slideId] ?? null }));\njob.step = 'aligning';\njob.updatedAt = new Date().toISOString();\nreturn [{ json: { job } }];" } },
+
+    { "id": "build-alignment-payload", "name": "Build Alignment Task Payload", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [4160, 580],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Collect Manus File Ids').item.json.job;\nconst schema = {\n  type: 'object',\n  properties: {\n    alignment: {\n      type: 'array',\n      items: {\n        type: 'object',\n        properties: {\n          slide_id: { type: 'string' },\n          transcript_excerpt: { type: 'string' },\n          confidence: { type: 'number' },\n          notes: { type: 'string' }\n        },\n        required: ['slide_id', 'transcript_excerpt']\n      }\n    }\n  },\n  required: ['alignment']\n};\n\nconst slideMeta = job.slides.map(s => ({ slide_id: s.slideId, pdf_role: job.sources.pdfs.find(p => p.id === s.pdfId)?.role }));\nconst prompt = `You are aligning a video transcript to presentation slide images.\\n\\nSlide images are attached in the order listed below, each tagged 'primary' or 'supplementary' by source deck. Build the main narrative sequence from the primary deck; pull a slide from a supplementary deck only when it covers transcript content the primary deck does not show. Skip slides (title/agenda/blank) that have no corresponding narrated content.\\n\\nFull transcript:\\n${job.sources.srt.fullText}\\n\\nSlide order and role metadata:\\n${JSON.stringify(slideMeta)}\\n\\nReturn, in narrative order, which slides correspond to which excerpt of the transcript.`;\n\nreturn [{ json: {\n  job,\n  body: {\n    message: prompt,\n    attachments: job.slides.map(s => ({ file_id: s.manusFileId })),\n    structured_output_schema: schema\n  }\n} }];" } },
+
+    { "id": "create-manus-task", "name": "Create Manus Alignment Task", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [4420, 580],
+      "parameters": { "method": "POST", "url": "https://api.manus.ai/v2/tasks", "sendBody": true, "specifyBody": "json", "jsonBody": "={{$json.body}}", "options": {} },
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ME", "name": "Manus API" } } },
+
+    { "id": "prepare-cp2", "name": "Prepare CP2", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [4680, 420],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Collect Manus File Ids').item.json.job;\njob.manus.taskId = $input.item.json.task_id;\njob.manus.status = $input.item.json.status || 'running';\njob.step = 'aligning';\njob.updatedAt = new Date().toISOString();\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(JSON.stringify(job, null, 2)), 'job.json', 'application/json');\nreturn [{ json: { job, jobJsonPath: `data/jobs/${job.jobId}/job.json` }, binary: { jobJson: binary } }];" } },
+    { "id": "save-cp2", "name": "Save CP2", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [4940, 420],
+      "parameters": { "operation": "write", "fileName": "={{$json.jobJsonPath}}", "dataPropertyName": "jobJson", "options": {} } },
+
+    { "id": "wait-before-poll", "name": "Wait Before Poll", "type": "n8n-nodes-base.wait", "typeVersion": 1.1, "position": [4680, 580],
+      "parameters": { "amount": 8, "unit": "seconds" } },
+
+    { "id": "get-manus-task", "name": "Get Manus Task", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [4940, 580],
+      "parameters": { "method": "GET", "url": "=https://api.manus.ai/v2/tasks/{{$('Create Manus Alignment Task').item.json.task_id}}", "options": {} },
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ME", "name": "Manus API" } } },
+
+    { "id": "is-manus-done", "name": "Is Manus Task Done", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [5200, 580],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{$json.agent_status}}", "rightValue": "stopped", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" } } },
+
+    { "id": "parse-alignment-result", "name": "Parse Alignment Result", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [5460, 500],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Collect Manus File Ids').item.json.job;\nconst resp = $input.item.json;\njob.manus.status = resp.agent_status || resp.status;\njob.alignment = (resp.structured_output?.alignment || []).map((a, i) => ({\n  sequenceIndex: i,\n  slideId: a.slide_id,\n  transcriptExcerpt: a.transcript_excerpt,\n  confidence: a.confidence ?? null,\n  notes: a.notes || ''\n}));\njob.step = 'condensing_narration';\njob.updatedAt = new Date().toISOString();\nreturn [{ json: { job } }];" } },
+
+    { "id": "prepare-cp3", "name": "Prepare CP3", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [5720, 340],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Parse Alignment Result').item.json.job;\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(JSON.stringify(job, null, 2)), 'job.json', 'application/json');\nreturn [{ json: { job, jobJsonPath: `data/jobs/${job.jobId}/job.json` }, binary: { jobJson: binary } }];" } },
+    { "id": "save-cp3", "name": "Save CP3", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [5980, 340],
+      "parameters": { "operation": "write", "fileName": "={{$json.jobJsonPath}}", "dataPropertyName": "jobJson", "options": {} } },
+
+    { "id": "build-condensation-prompt", "name": "Build Condensation Prompt", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [5720, 500],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Parse Alignment Result').item.json.job;\nconst totalChars = job.alignment.reduce((sum, a) => sum + a.transcriptExcerpt.length, 0) || 1;\nconst totalWordBudget = Math.round(job.params.targetDurationSeconds / 60 * 130);\nconst segments = job.alignment.map(a => ({\n  sequenceIndex: a.sequenceIndex,\n  slideId: a.slideId,\n  excerpt: a.transcriptExcerpt,\n  wordBudget: Math.max(5, Math.round((a.transcriptExcerpt.length / totalChars) * totalWordBudget))\n}));\n\nconst styleInstruction = job.params.narrationStyle || 'clear, neutral documentary narration';\nconst prompt = `Condense each transcript excerpt below into narration matching this style: \"${styleInstruction}\".\\nTotal narration across all segments must sum to about ${totalWordBudget} words (~${job.params.targetDurationSeconds}s spoken at 130wpm).\\nEach segment lists its own word budget; stay close to it while keeping sentences natural and self-contained (each plays over one static image).\\nRespond with ONLY JSON of the shape {\"narration\":[{\"sequence_index\":0,\"slide_id\":\"...\",\"script\":\"...\"}]}.\\n\\nSegments:\\n${JSON.stringify(segments, null, 2)}`;\n\nreturn [{ json: { job, prompt } }];" } },
+
+    { "id": "condense-narration", "name": "Condense Narration LLM", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [5980, 500],
+      "parameters": { "method": "POST", "url": "https://api.anthropic.com/v1/messages", "sendHeaders": true, "headerParameters": { "parameters": [ { "name": "anthropic-version", "value": "2023-06-01" } ] }, "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { model: 'claude-sonnet-5', max_tokens: 4096, messages: [ { role: 'user', content: $json.prompt } ] } }}", "options": {} },
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ME", "name": "Anthropic API" } } },
+
+    { "id": "parse-narration-result", "name": "Parse Narration Result", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [6240, 500],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Parse Alignment Result').item.json.job;\nconst raw = $input.item.json;\nconst text = raw.content?.[0]?.text || '{\"narration\":[]}';\nlet parsed;\ntry { parsed = JSON.parse(text); } catch (e) { parsed = { narration: [] }; }\n\njob.narration = parsed.narration.map(n => {\n  const words = (n.script || '').trim().split(/\\s+/).filter(Boolean).length;\n  return {\n    sequenceIndex: n.sequence_index,\n    slideId: n.slide_id,\n    script: n.script,\n    estimatedWords: words,\n    estimatedSeconds: Math.round((words / 130) * 60)\n  };\n}).sort((a, b) => a.sequenceIndex - b.sequenceIndex);\n\njob.step = 'resolving_voice';\njob.updatedAt = new Date().toISOString();\nreturn [{ json: { job } }];" } },
+
+    { "id": "prepare-cp4", "name": "Prepare CP4", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [6500, 340],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Parse Narration Result').item.json.job;\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(JSON.stringify(job, null, 2)), 'job.json', 'application/json');\nreturn [{ json: { job, jobJsonPath: `data/jobs/${job.jobId}/job.json` }, binary: { jobJson: binary } }];" } },
+    { "id": "save-cp4", "name": "Save CP4", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [6760, 340],
+      "parameters": { "operation": "write", "fileName": "={{$json.jobJsonPath}}", "dataPropertyName": "jobJson", "options": {} } },
+
+    { "id": "voice-mode-custom", "name": "Voice Mode Custom?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [6500, 500],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{$('Parse Narration Result').item.json.job.params.voice.mode}}", "rightValue": "custom", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" } } },
+
+    { "id": "elevenlabs-voice-design", "name": "ElevenLabs Voice Design", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [6760, 440],
+      "parameters": { "method": "POST", "url": "https://api.elevenlabs.io/v1/text-to-voice/design", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { voice_description: $('Parse Narration Result').item.json.job.params.voice.customDescription, text: 'This is a preview of the requested narration voice.' } }}", "options": {} },
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ME", "name": "ElevenLabs API" } } },
+    { "id": "store-voice-custom", "name": "Store Resolved Voice Custom", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [7020, 440],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Parse Narration Result').item.json.job;\njob.params.voice.resolvedVoiceId = $input.item.json.voice_id;\njob.step = 'synthesizing_audio';\njob.updatedAt = new Date().toISOString();\nreturn [{ json: { job } }];" } },
+
+    { "id": "store-voice-preset", "name": "Store Resolved Voice Preset", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [6760, 580],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Parse Narration Result').item.json.job;\njob.params.voice.resolvedVoiceId = job.params.voice.presetVoiceId;\njob.step = 'synthesizing_audio';\njob.updatedAt = new Date().toISOString();\nreturn [{ json: { job } }];" } },
+
+    { "id": "merge-voice-branch", "name": "Merge Voice Branch", "type": "n8n-nodes-base.merge", "typeVersion": 3, "position": [7280, 500],
+      "parameters": { "mode": "append" } },
+
+    { "id": "prepare-cp5", "name": "Prepare CP5", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [7540, 340],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Merge Voice Branch').item.json.job;\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(JSON.stringify(job, null, 2)), 'job.json', 'application/json');\nreturn [{ json: { job, jobJsonPath: `data/jobs/${job.jobId}/job.json` }, binary: { jobJson: binary } }];" } },
+    { "id": "save-cp5", "name": "Save CP5", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [7800, 340],
+      "parameters": { "operation": "write", "fileName": "={{$json.jobJsonPath}}", "dataPropertyName": "jobJson", "options": {} } },
+
+    { "id": "narration-to-items", "name": "Narration To Items", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [7540, 500],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Merge Voice Branch').item.json.job;\nreturn job.narration.map(n => ({ json: { job, seg: n } }));" } },
+
+    { "id": "elevenlabs-tts", "name": "ElevenLabs TTS", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [7800, 500],
+      "parameters": { "method": "POST", "url": "=https://api.elevenlabs.io/v1/text-to-speech/{{$json.job.params.voice.resolvedVoiceId}}", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { text: $json.seg.script, model_id: 'eleven_multilingual_v2' } }}", "options": { "response": { "response": { "responseFormat": "file", "outputPropertyName": "data" } } } },
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ME", "name": "ElevenLabs API" } } },
+
+    { "id": "save-tts-audio", "name": "Save TTS Audio", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [8060, 500],
+      "parameters": { "operation": "write", "fileName": "=data/jobs/{{$json.job.jobId}}/audio/seg-{{$json.seg.sequenceIndex.toString().padStart(3,'0')}}.mp3", "dataPropertyName": "data", "options": {} } },
+
+    { "id": "probe-duration", "name": "Probe Duration", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1, "position": [8320, 500],
+      "parameters": { "command": "=ffprobe -v quiet -print_format json -show_format \"data/jobs/{{$('Narration To Items').item.json.job.jobId}}/audio/seg-{{$('Narration To Items').item.json.seg.sequenceIndex.toString().padStart(3,'0')}}.mp3\"" } },
+
+    { "id": "parse-duration", "name": "Parse Duration", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [8580, 500],
+      "parameters": { "mode": "runOnceForEachItem", "jsCode": "const seg = $('Narration To Items').item.json.seg;\nconst jobId = $('Narration To Items').item.json.job.jobId;\nconst stdout = $input.item.json.stdout;\nlet durationSeconds = 0;\ntry { durationSeconds = parseFloat(JSON.parse(stdout).format.duration); } catch (e) {}\nconst pnum = String(seg.sequenceIndex).padStart(3, '0');\nreturn { json: {\n  sequenceIndex: seg.sequenceIndex,\n  path: `data/jobs/${jobId}/audio/seg-${pnum}.mp3`,\n  durationSeconds\n} };" } },
+
+    { "id": "collect-audio-durations", "name": "Collect Audio Durations", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [8840, 500],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Merge Voice Branch').item.json.job;\nconst items = $input.all();\njob.audio = items.map(i => i.json).sort((a, b) => a.sequenceIndex - b.sequenceIndex);\njob.phase = 'ready_for_render';\njob.step = 'ready_for_render';\njob.updatedAt = new Date().toISOString();\nreturn [{ json: { job } }];" } },
+
+    { "id": "prepare-cp6", "name": "Prepare CP6 Final", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [9100, 500],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Collect Audio Durations').item.json.job;\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(JSON.stringify(job, null, 2)), 'job.json', 'application/json');\nreturn [{ json: { job, jobJsonPath: `data/jobs/${job.jobId}/job.json` }, binary: { jobJson: binary } }];" } },
+    { "id": "save-cp6", "name": "Save CP6 Final", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [9360, 500],
+      "parameters": { "operation": "write", "fileName": "={{$json.jobJsonPath}}", "dataPropertyName": "jobJson", "options": {} } }
+  ],
+  "connections": {
+    "Webhook": { "main": [[ { "node": "Build Job Record", "type": "main", "index": 0 } ]] },
+    "Build Job Record": { "main": [[ { "node": "Ack Job", "type": "main", "index": 0 }, { "node": "Prepare CP0", "type": "main", "index": 0 }, { "node": "Ensure Job Dirs", "type": "main", "index": 0 } ]] },
+    "Prepare CP0": { "main": [[ { "node": "Save CP0", "type": "main", "index": 0 } ]] },
+    "Ensure Job Dirs": { "main": [[ { "node": "Fan Out Input Files", "type": "main", "index": 0 } ]] },
+    "Fan Out Input Files": { "main": [[ { "node": "Save Input Files", "type": "main", "index": 0 } ]] },
+    "Save Input Files": { "main": [[ { "node": "Rejoin After Save", "type": "main", "index": 0 } ]] },
+    "Rejoin After Save": { "main": [[ { "node": "Parse SRT", "type": "main", "index": 0 } ]] },
+    "Parse SRT": { "main": [[ { "node": "Build Extraction Command", "type": "main", "index": 0 } ]] },
+    "Build Extraction Command": { "main": [[ { "node": "Extract PDF Pages", "type": "main", "index": 0 } ]] },
+    "Extract PDF Pages": { "main": [[ { "node": "List Slide Files", "type": "main", "index": 0 } ]] },
+    "List Slide Files": { "main": [[ { "node": "Build Slides Index", "type": "main", "index": 0 } ]] },
+    "Build Slides Index": { "main": [[ { "node": "Prepare CP1", "type": "main", "index": 0 }, { "node": "Slides To Items", "type": "main", "index": 0 } ]] },
+    "Prepare CP1": { "main": [[ { "node": "Save CP1", "type": "main", "index": 0 } ]] },
+    "Slides To Items": { "main": [[ { "node": "Read Slide Image", "type": "main", "index": 0 } ]] },
+    "Read Slide Image": { "main": [[ { "node": "Upload Slide Image", "type": "main", "index": 0 } ]] },
+    "Upload Slide Image": { "main": [[ { "node": "Tag Upload Result", "type": "main", "index": 0 } ]] },
+    "Tag Upload Result": { "main": [[ { "node": "Collect Manus File Ids", "type": "main", "index": 0 } ]] },
+    "Collect Manus File Ids": { "main": [[ { "node": "Build Alignment Task Payload", "type": "main", "index": 0 } ]] },
+    "Build Alignment Task Payload": { "main": [[ { "node": "Create Manus Alignment Task", "type": "main", "index": 0 } ]] },
+    "Create Manus Alignment Task": { "main": [[ { "node": "Prepare CP2", "type": "main", "index": 0 }, { "node": "Wait Before Poll", "type": "main", "index": 0 } ]] },
+    "Prepare CP2": { "main": [[ { "node": "Save CP2", "type": "main", "index": 0 } ]] },
+    "Wait Before Poll": { "main": [[ { "node": "Get Manus Task", "type": "main", "index": 0 } ]] },
+    "Get Manus Task": { "main": [[ { "node": "Is Manus Task Done", "type": "main", "index": 0 } ]] },
+    "Is Manus Task Done": { "main": [ [ { "node": "Parse Alignment Result", "type": "main", "index": 0 } ], [ { "node": "Wait Before Poll", "type": "main", "index": 0 } ] ] },
+    "Parse Alignment Result": { "main": [[ { "node": "Prepare CP3", "type": "main", "index": 0 }, { "node": "Build Condensation Prompt", "type": "main", "index": 0 } ]] },
+    "Prepare CP3": { "main": [[ { "node": "Save CP3", "type": "main", "index": 0 } ]] },
+    "Build Condensation Prompt": { "main": [[ { "node": "Condense Narration LLM", "type": "main", "index": 0 } ]] },
+    "Condense Narration LLM": { "main": [[ { "node": "Parse Narration Result", "type": "main", "index": 0 } ]] },
+    "Parse Narration Result": { "main": [[ { "node": "Prepare CP4", "type": "main", "index": 0 }, { "node": "Voice Mode Custom?", "type": "main", "index": 0 } ]] },
+    "Prepare CP4": { "main": [[ { "node": "Save CP4", "type": "main", "index": 0 } ]] },
+    "Voice Mode Custom?": { "main": [ [ { "node": "ElevenLabs Voice Design", "type": "main", "index": 0 } ], [ { "node": "Store Resolved Voice Preset", "type": "main", "index": 0 } ] ] },
+    "ElevenLabs Voice Design": { "main": [[ { "node": "Store Resolved Voice Custom", "type": "main", "index": 0 } ]] },
+    "Store Resolved Voice Custom": { "main": [[ { "node": "Merge Voice Branch", "type": "main", "index": 0 } ]] },
+    "Store Resolved Voice Preset": { "main": [[ { "node": "Merge Voice Branch", "type": "main", "index": 1 } ]] },
+    "Merge Voice Branch": { "main": [[ { "node": "Prepare CP5", "type": "main", "index": 0 }, { "node": "Narration To Items", "type": "main", "index": 0 } ]] },
+    "Prepare CP5": { "main": [[ { "node": "Save CP5", "type": "main", "index": 0 } ]] },
+    "Narration To Items": { "main": [[ { "node": "ElevenLabs TTS", "type": "main", "index": 0 } ]] },
+    "ElevenLabs TTS": { "main": [[ { "node": "Save TTS Audio", "type": "main", "index": 0 } ]] },
+    "Save TTS Audio": { "main": [[ { "node": "Probe Duration", "type": "main", "index": 0 } ]] },
+    "Probe Duration": { "main": [[ { "node": "Parse Duration", "type": "main", "index": 0 } ]] },
+    "Parse Duration": { "main": [[ { "node": "Collect Audio Durations", "type": "main", "index": 0 } ]] },
+    "Collect Audio Durations": { "main": [[ { "node": "Prepare CP6 Final", "type": "main", "index": 0 } ]] },
+    "Prepare CP6 Final": { "main": [[ { "node": "Save CP6 Final", "type": "main", "index": 0 } ]] }
+  }
+}
