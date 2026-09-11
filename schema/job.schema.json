@@ -196,9 +196,23 @@
       "description": "Populated by the (separate, repeatable) Phase 2 render workflow. Not touched by Phase 1.",
       "properties": {
         "renderedAt": { "type": ["string", "null"], "format": "date-time" },
-        "outputPath": { "type": ["string", "null"] },
+        "outputPath": { "type": ["string", "null"], "description": "Path of the most recent render." },
         "outputUrl": { "type": ["string", "null"] },
-        "renderCount": { "type": "integer", "default": 0, "description": "Incremented each time phase 2 re-renders with different transition params, so old outputs can be kept or pruned." }
+        "renderCount": { "type": "integer", "default": 0, "description": "Incremented each time phase 2 re-renders with different transition params, so old outputs can be kept or pruned." },
+        "history": {
+          "type": "array",
+          "description": "One entry per render, oldest first. Each re-render (e.g. trying a different transition) appends here rather than overwriting; params.transition itself is never mutated by phase 2.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "renderCount": { "type": "integer" },
+              "renderedAt": { "type": "string", "format": "date-time" },
+              "outputPath": { "type": "string" },
+              "transition": { "type": "object", "description": "The transition params actually used for this render, including any CLI overrides." },
+              "resolution": { "type": "string" }
+            }
+          }
+        }
       }
     },
 
