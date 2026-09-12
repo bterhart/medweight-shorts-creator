@@ -200,7 +200,15 @@ def main():
     render_count = job.get("render", {}).get("renderCount", 0) + 1
     out_path = out_dir / f"video-{render_count:02d}.mp4"
 
-    final_video.write_videofile(str(out_path), fps=args.fps, codec="libx264", audio_codec="aac", logger=None)
+    # +faststart moves the moov atom to the front of the file so browsers can
+    # read metadata (duration, seek points) from the first bytes instead of
+    # needing a range request to the tail - matters because the file server
+    # in front of data/jobs/ may not support HTTP Range at all (see files
+    # workflow's caveats).
+    final_video.write_videofile(
+        str(out_path), fps=args.fps, codec="libx264", audio_codec="aac", logger=None,
+        ffmpeg_params=["-movflags", "+faststart"],
+    )
 
     now = datetime.now(timezone.utc).isoformat()
     job.setdefault("render", {})

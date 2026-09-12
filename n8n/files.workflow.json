@@ -1,0 +1,47 @@
+{
+  "name": "Waterway Narrator - File Server",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "staticData": null,
+  "nodes": [
+    { "id": "files-webhook", "name": "Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 0],
+      "parameters": { "httpMethod": "GET", "path": "files", "responseMode": "responseNode", "options": {} } },
+
+    { "id": "files-webhook-head", "name": "Webhook HEAD", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 260],
+      "parameters": { "httpMethod": "HEAD", "path": "files", "responseMode": "responseNode", "options": {} } },
+
+    { "id": "validate-path", "name": "Validate Path", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [260, 130],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const path = require('path');\nconst requested = $input.item.json.query.path || '';\nconst jobsRoot = path.resolve('data/jobs');\nconst resolved = path.resolve(jobsRoot, requested);\nconst method = $input.item.json.method;\n\n// Only ever serve files that resolve to somewhere inside data/jobs/ -\n// blocks '../' traversal regardless of how it's encoded in the query string.\nif (!resolved.startsWith(jobsRoot + path.sep)) {\n  return [{ json: { valid: false, error: 'path outside data/jobs', method } }];\n}\nreturn [{ json: { valid: true, resolved, method } }];" } },
+
+    { "id": "is-path-valid", "name": "Is Path Valid?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [520, 130],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{$json.valid}}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } } ], "combinator": "and" } } },
+
+    { "id": "is-head-request", "name": "Is HEAD Request?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [780, 0],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{$json.method}}", "rightValue": "HEAD", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" } } },
+
+    { "id": "read-file", "name": "Read File", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [1040, -120],
+      "parameters": { "operation": "read", "fileSelector": "={{$json.resolved}}", "options": { "dataPropertyName": "data" } } },
+
+    { "id": "respond-file", "name": "Respond File", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [1300, -120],
+      "parameters": { "respondWith": "binary", "options": { "responseHeaders": { "entries": [ { "name": "Accept-Ranges", "value": "bytes" } ] } } } },
+
+    { "id": "stat-file", "name": "Stat File Size", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1, "position": [1040, 120],
+      "parameters": { "command": "=stat -c%s \"{{$json.resolved}}\"" } },
+
+    { "id": "respond-head", "name": "Respond HEAD", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [1300, 120],
+      "parameters": { "respondWith": "text", "responseBody": "", "options": { "responseHeaders": { "entries": [ { "name": "Content-Length", "value": "={{$json.stdout.trim()}}" }, { "name": "Accept-Ranges", "value": "bytes" } ] } } } },
+
+    { "id": "respond-forbidden", "name": "Respond Forbidden", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [780, 320],
+      "parameters": { "respondWith": "json", "responseCode": 403, "responseBody": "={{ { error: $json.error } }}" } }
+  ],
+  "connections": {
+    "Webhook": { "main": [[ { "node": "Validate Path", "type": "main", "index": 0 } ]] },
+    "Webhook HEAD": { "main": [[ { "node": "Validate Path", "type": "main", "index": 0 } ]] },
+    "Validate Path": { "main": [[ { "node": "Is Path Valid?", "type": "main", "index": 0 } ]] },
+    "Is Path Valid?": { "main": [ [ { "node": "Is HEAD Request?", "type": "main", "index": 0 } ], [ { "node": "Respond Forbidden", "type": "main", "index": 0 } ] ] },
+    "Is HEAD Request?": { "main": [ [ { "node": "Stat File Size", "type": "main", "index": 0 } ], [ { "node": "Read File", "type": "main", "index": 0 } ] ] },
+    "Read File": { "main": [[ { "node": "Respond File", "type": "main", "index": 0 } ]] },
+    "Stat File Size": { "main": [[ { "node": "Respond HEAD", "type": "main", "index": 0 } ]] }
+  }
+}

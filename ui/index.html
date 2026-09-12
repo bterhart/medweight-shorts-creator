@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Waterway Narrator</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <h1>Waterway Narrator</h1>
+    <button id="settings-toggle" class="link-btn" type="button">Settings</button>
+  </header>
+
+  <section id="settings-panel" class="panel" hidden>
+    <label>
+      n8n webhook base URL
+      <input id="api-base" type="text" placeholder="https://your-n8n-host/webhook" />
+    </label>
+    <button id="settings-save" type="button">Save</button>
+  </section>
+
+  <main>
+    <!-- ===================== SETUP ===================== -->
+    <section id="setup-section" class="panel">
+      <h2>1. Upload &amp; configure</h2>
+
+      <div class="field-group">
+        <label>Transcript (.srt)</label>
+        <div id="srt-dropzone" class="dropzone">
+          <span class="dropzone-hint">Drag &amp; drop the .srt file here, or click to browse</span>
+          <input id="srt-input" type="file" accept=".srt" hidden />
+        </div>
+        <div id="srt-filename" class="file-chip" hidden></div>
+      </div>
+
+      <div class="field-group">
+        <label>Slide deck PDF(s)</label>
+        <div id="pdf-dropzone" class="dropzone">
+          <span class="dropzone-hint">Drag &amp; drop one or more PDFs here, or click to browse</span>
+          <input id="pdf-input" type="file" accept=".pdf" multiple hidden />
+        </div>
+        <ul id="pdf-list" class="pdf-list"></ul>
+        <p class="hint">Mark exactly one deck as <strong>Primary</strong> — the narrative is built from it first; other decks fill in only where the primary deck has no matching slide.</p>
+      </div>
+
+      <div class="field-row">
+        <div class="field-group">
+          <label>Target narration length</label>
+          <div id="duration-control" class="segmented" data-value="90">
+            <button type="button" data-value="45">45s</button>
+            <button type="button" data-value="90">90s</button>
+            <button type="button" data-value="180">3 min</button>
+            <button type="button" data-value="300">5 min</button>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label for="aspect-select">Output format</label>
+          <select id="aspect-select">
+            <option value="1920x1080" data-ratio="16:9" selected>16:9 (1920x1080)</option>
+            <option value="1080x1920" data-ratio="9:16">9:16 (1080x1920, vertical)</option>
+            <option value="1080x1080" data-ratio="1:1">1:1 (1080x1080)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label for="narration-style">Narration style / expertise</label>
+        <input id="narration-style" type="text" placeholder="e.g. plain-language park ranger, or academic hydrology lecture" />
+      </div>
+
+      <div class="field-group">
+        <label>Voice</label>
+        <select id="voice-preset">
+          <option value="21m00Tcm4TlvDq8ikWAM">Rachel — US female, warm</option>
+          <option value="pNInz6obpgDQGcFmaJgB">Adam — US male, deep</option>
+          <option value="EXAVITQu4vr4xnSDxMaL">Bella — US female, soft</option>
+          <option value="ErXwobaYiN019PkySvjV">Antoni — US male, calm</option>
+          <option value="custom">Custom voice description…</option>
+        </select>
+        <p class="hint">Preset IDs are ElevenLabs' commonly-used default library voices — verify they're available on your account, or replace with your own.</p>
+        <textarea id="voice-custom" placeholder="e.g. 50s male, Scottish accent, warm documentary narrator" hidden></textarea>
+      </div>
+
+      <div class="field-group">
+        <label>Transition</label>
+        <div class="field-row">
+          <select id="transition-type">
+            <option value="cut">Cut</option>
+            <option value="fade" selected>Fade to black</option>
+            <option value="crossfade">Crossfade</option>
+            <option value="wipe">Wipe</option>
+            <option value="slide">Slide</option>
+          </select>
+          <label class="inline-number">Transition seconds
+            <input id="transition-seconds" type="number" step="0.05" min="0.1" max="3" value="0.75" />
+          </label>
+          <label class="inline-number">Min. seconds per slide
+            <input id="min-slide-seconds" type="number" step="0.5" min="1" value="3" />
+          </label>
+        </div>
+      </div>
+
+      <button id="submit-btn" class="primary-btn" type="button" disabled>Start preparing</button>
+      <p id="setup-error" class="error-text" hidden></p>
+    </section>
+
+    <!-- ===================== PROGRESS ===================== -->
+    <section id="progress-section" class="panel" hidden>
+      <h2>2. Preparing your script</h2>
+      <p class="hint">Job <code id="progress-job-id"></code> — this runs alignment, narration, and voice synthesis. No video is rendered yet.</p>
+      <ol id="step-list" class="step-list"></ol>
+      <p id="progress-error" class="error-text" hidden></p>
+    </section>
+
+    <!-- ===================== REVIEW ===================== -->
+    <section id="review-section" class="panel" hidden>
+      <h2>3. Review script &amp; slides</h2>
+      <p class="hint">Nothing is rendered yet — this is the free part. Re-run just the render below as many times as you like.</p>
+      <div id="segment-list" class="segment-list"></div>
+
+      <div class="field-group">
+        <label>Transition (change freely — re-rendering doesn't redo alignment/voice)</label>
+        <div class="field-row">
+          <select id="render-transition-type">
+            <option value="cut">Cut</option>
+            <option value="fade">Fade to black</option>
+            <option value="crossfade">Crossfade</option>
+            <option value="wipe">Wipe</option>
+            <option value="slide">Slide</option>
+          </select>
+          <label class="inline-number">Transition seconds
+            <input id="render-transition-seconds" type="number" step="0.05" min="0.1" max="3" />
+          </label>
+          <label class="inline-number">Min. seconds per slide
+            <input id="render-min-slide-seconds" type="number" step="0.5" min="1" />
+          </label>
+        </div>
+      </div>
+
+      <button id="render-btn" class="primary-btn" type="button">Render video</button>
+      <p id="render-status" class="hint" hidden></p>
+      <p id="render-error" class="error-text" hidden></p>
+    </section>
+
+    <!-- ===================== RESULT ===================== -->
+    <section id="result-section" class="panel" hidden>
+      <h2>4. Result</h2>
+      <video id="result-video" controls></video>
+      <div class="field-row">
+        <a id="result-download" class="primary-btn" download>Download video</a>
+        <button id="render-again-btn" class="link-btn" type="button">Back to review — try another transition</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

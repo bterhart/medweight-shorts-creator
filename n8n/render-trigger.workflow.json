@@ -1,0 +1,33 @@
+{
+  "name": "Waterway Narrator - Phase 2 (Render Trigger)",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "staticData": null,
+  "nodes": [
+    { "id": "render-webhook", "name": "Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 0],
+      "parameters": { "httpMethod": "POST", "path": "jobs/:jobId/render", "responseMode": "responseNode", "options": {} } },
+
+    { "id": "build-render-command", "name": "Build Render Command", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [260, 0],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const jobId = $input.item.json.params.jobId;\nconst body = $input.item.json.body || {};\n\nconst safe = (s) => String(s).replace(/[^a-zA-Z0-9_.:-]/g, '');\nconst args = [`python3 render/render.py ${safe(jobId)} --data-dir data`];\nif (body.transitionType) args.push(`--transition-type ${safe(body.transitionType)}`);\nif (body.transitionSeconds != null) args.push(`--transition-seconds ${Number(body.transitionSeconds)}`);\nif (body.minSlideSeconds != null) args.push(`--min-slide-seconds ${Number(body.minSlideSeconds)}`);\nif (body.resolution) args.push(`--resolution ${safe(body.resolution)}`);\n\nreturn [{ json: { jobId, command: args.join(' ') } }];" } },
+
+    { "id": "run-render", "name": "Run Render Script", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1, "position": [520, 0],
+      "parameters": { "command": "={{$json.command}}" } },
+
+    { "id": "read-updated-job", "name": "Read Updated job.json", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [780, 0],
+      "parameters": { "operation": "read", "fileSelector": "=data/jobs/{{$('Build Render Command').item.json.jobId}}/job.json", "options": { "dataPropertyName": "data" } } },
+
+    { "id": "parse-updated-job", "name": "Parse Updated job.json", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1040, 0],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const buf = await this.helpers.binaryToBuffer($input.item.binary.data);\nconst job = JSON.parse(buf.toString('utf-8'));\nreturn [{ json: { job } }];" } },
+
+    { "id": "respond-render", "name": "Respond Render Result", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [1300, 0],
+      "parameters": { "respondWith": "json", "responseBody": "={{$json.job}}" } }
+  ],
+  "connections": {
+    "Webhook": { "main": [[ { "node": "Build Render Command", "type": "main", "index": 0 } ]] },
+    "Build Render Command": { "main": [[ { "node": "Run Render Script", "type": "main", "index": 0 } ]] },
+    "Run Render Script": { "main": [[ { "node": "Read Updated job.json", "type": "main", "index": 0 } ]] },
+    "Read Updated job.json": { "main": [[ { "node": "Parse Updated job.json", "type": "main", "index": 0 } ]] },
+    "Parse Updated job.json": { "main": [[ { "node": "Respond Render Result", "type": "main", "index": 0 } ]] }
+  }
+}
