@@ -124,13 +124,30 @@ is nested, not a flat `file_id`. `phase1-prepare.workflow.json`'s upload nodes (
 spec also states *every* v2 endpoint uses this `{ok, request_id, ...}` / `{ok:false, error:{code,message}}`
 envelope, which almost certainly extends to task creation and polling too.
 
-**Still needed:** the `task.create` and `task.get` (or equivalent status-polling) doc pages — same format
-as the file.upload one pasted above (the OpenAPI YAML block is exactly what's useful). `Create Manus
-Alignment Task`, `Get Manus Task`, and `Parse Alignment Result` in `phase1-prepare.workflow.json` still
-assume unconfirmed field names (`task_id`, `structured_output_schema`, `agent_status: "stopped"` as the
-completion signal) drafted from third-party summaries, not Manus's own reference. Given the envelope
-pattern just confirmed, expect the real shape to wrap the task under a `task` key the same way `file.upload`
-wraps under `file` — but that's an inference, not a read, so send the actual spec before relying on it.
+**`task.create` confirmed and fixed** against the real spec — two things were wrong: (1) the endpoint is
+`POST /v2/task.create`, not `/v2/tasks`; (2) attaching slide images is **not** a separate `attachments`
+field — files are `{"type": "file", "file_id": "..."}` parts mixed directly into `message.content`
+alongside a `{"type": "text", "text": "..."}` part, all in one array. `task_id` in the response really is
+flat (`{"ok": true, "task_id": "...", ...}`) — the earlier guess happened to be right there, but the
+attachment shape was materially wrong and would have failed outright. Also fixed: Manus's structured-output
+subset requires **every** property listed in `required` and `additionalProperties: false` at every object
+level (not just the ones semantically optional) — the alignment schema now does this.
+
+**Real, currently-unhandled constraint found in the same spec:** `message.content`'s combined text across
+all text parts is capped at ~5,000 estimated tokens, and splitting the text across multiple parts does
+**not** raise the cap — it's the same 5,000-token ceiling either way. The alignment prompt sends the
+*entire* transcript in one text part. For a short clip this is fine; for anything longer, `task.create`
+will reject the request with `InvalidArgument` (HTTP 400). Not yet addressed — options would be truncating/
+summarizing the transcript before sending it to Manus, or splitting alignment across multiple
+`task.sendMessage` calls per chunk of slides, but that's a real design decision, not a one-line fix.
+
+**Still needed:** how to actually detect task completion. `task.create`'s own docs say to poll via
+**`task.listMessages`**, not a simple "get task" endpoint — and a *separate* `task.detail` endpoint is
+referenced elsewhere in the same doc page too, with no description of what either returns. This means the
+current polling loop (`Get Manus Task` → `Is Manus Task Done`, hitting a guessed `GET /v2/tasks/{id}`
+expecting an `agent_status` field) is very likely built on an endpoint that doesn't exist as documented,
+and needs the `task.listMessages` and `task.detail` doc pages (same OpenAPI-YAML paste format) before it
+can be trusted at all — this is the one piece I'd treat as definitely broken right now, not just unverified.
 
 ## 6. The UI
 
