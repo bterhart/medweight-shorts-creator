@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://waterway-narrator/schema/job.schema.json",
   "title": "Job",
-  "description": "Persisted state for one transcript+slides video job. Stored on disk at data/jobs/<jobId>/job.json and treated as the single source of truth for both the n8n workflows and the UI's status polling.",
+  "description": "Persisted state for one transcript+slides video job. Stored as the `data` JSON column of one row in the `jobs` MySQL table (see backend/schema.sql) and treated as the single source of truth for backend/worker.py and the UI's status polling.",
   "type": "object",
   "required": ["jobId", "createdAt", "updatedAt", "phase", "step", "params", "sources"],
   "properties": {
