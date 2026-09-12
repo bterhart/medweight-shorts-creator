@@ -187,7 +187,8 @@ def condense_narration(job: dict) -> None:
         timeout=60,
     )
     resp.raise_for_status()
-    text = resp.json()["content"][0]["text"]
+    content = resp.json()["content"]
+    text = next(block["text"] for block in content if block.get("type") == "text")
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
