@@ -112,17 +112,25 @@ from where I built this. `xi-api-key` and `x-api-key` are ElevenLabs' and Anthro
 header names respectively.) Use whatever keys you're issuing after rotating the ones pasted earlier in
 this conversation — never keys that have appeared in a chat transcript.
 
-**Base URL confirmed:** `https://api.manus.ai`, per Manus's own docs — matches what the three Manus-calling
-nodes (`Upload Slide Image`, `Create Manus Alignment Task`, `Get Manus Task` in
-`phase1-prepare.workflow.json`) already use, so no URL changes were needed there.
+**Base URL confirmed:** `https://api.manus.ai`, per Manus's own docs.
 
-**Still unconfirmed:** the exact paths and field names under that host. The nodes currently assume
-`POST /v2/files` (upload, response field `file_id`), `POST /v2/tasks` (create, response field `task_id`,
-request field `structured_output_schema`), and `GET /v2/tasks/{id}` (poll, with `agent_status: "stopped"`
-signaling completion) — all drafted from third-party SDK/doc summaries, not a first-hand read of
-`https://api.manus.ai`'s reference. If you can grab the actual request/response shape for "create task"
-and "get task" from the same docs page (sanitized, no key), I'll correct these against the real thing
-rather than continuing to guess.
+**File upload confirmed and fixed** against the real `file.upload` OpenAPI spec — it's a two-step flow,
+not the one-shot multipart POST originally guessed: `POST /v2/file.upload` with just `{"filename": "..."}`
+creates a file record and returns a presigned `upload_url` (expires in 3 minutes), then the actual image
+bytes go in a separate `PUT` to that URL. The response wraps everything as
+`{"ok": true, "request_id": "...", "file": {"id": "...", ...}, "upload_url": "...", ...}` — note `file.id`
+is nested, not a flat `file_id`. `phase1-prepare.workflow.json`'s upload nodes (`Create File Record` →
+`Merge Upload Url With Image` → `Upload File Bytes` → `Tag Upload Result`) now match this exactly. The
+spec also states *every* v2 endpoint uses this `{ok, request_id, ...}` / `{ok:false, error:{code,message}}`
+envelope, which almost certainly extends to task creation and polling too.
+
+**Still needed:** the `task.create` and `task.get` (or equivalent status-polling) doc pages — same format
+as the file.upload one pasted above (the OpenAPI YAML block is exactly what's useful). `Create Manus
+Alignment Task`, `Get Manus Task`, and `Parse Alignment Result` in `phase1-prepare.workflow.json` still
+assume unconfirmed field names (`task_id`, `structured_output_schema`, `agent_status: "stopped"` as the
+completion signal) drafted from third-party summaries, not Manus's own reference. Given the envelope
+pattern just confirmed, expect the real shape to wrap the task under a `task` key the same way `file.upload`
+wraps under `file` — but that's an inference, not a read, so send the actual spec before relying on it.
 
 ## 6. The UI
 

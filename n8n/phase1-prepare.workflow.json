@@ -57,12 +57,18 @@
     { "id": "read-slide-image", "name": "Read Slide Image", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [3120, 580],
       "parameters": { "operation": "read", "fileSelector": "={{$json.slide.imagePath}}", "options": { "dataPropertyName": "data" } } },
 
-    { "id": "upload-slide-image", "name": "Upload Slide Image", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [3380, 580],
-      "parameters": { "method": "POST", "url": "https://api.manus.ai/v2/files", "sendBody": true, "contentType": "multipart-form-data", "bodyParameters": { "parameters": [ { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" } ] }, "options": {} },
+    { "id": "create-file-record", "name": "Create File Record", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [3380, 580],
+      "parameters": { "method": "POST", "url": "https://api.manus.ai/v2/file.upload", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { filename: $('Slides To Items').item.json.slide.slideId + '.png' } }}", "options": {} },
       "credentials": { "httpHeaderAuth": { "id": "REPLACE_ME", "name": "Manus API" } } },
 
-    { "id": "tag-upload-result", "name": "Tag Upload Result", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [3640, 580],
-      "parameters": { "mode": "runOnceForEachItem", "jsCode": "const slide = $('Slides To Items').item.json.slide;\nreturn { json: { slideId: slide.slideId, file_id: $input.item.json.file_id } };" } },
+    { "id": "merge-upload-url-with-image", "name": "Merge Upload Url With Image", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [3640, 580],
+      "parameters": { "mode": "runOnceForEachItem", "jsCode": "// file.upload only creates the record + a presigned PUT url; the actual\n// bytes go in a separate PUT request below, per Manus's two-step upload.\nconst resp = $input.item.json;\nif (!resp.ok) throw new Error(`file.upload failed: ${resp.error?.message}`);\nreturn { json: { fileId: resp.file.id, uploadUrl: resp.upload_url }, binary: $('Read Slide Image').item.binary };" } },
+
+    { "id": "upload-file-bytes", "name": "Upload File Bytes", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [3900, 580],
+      "parameters": { "method": "PUT", "url": "={{$json.uploadUrl}}", "sendBody": true, "contentType": "binaryData", "inputDataFieldName": "data", "options": {} } },
+
+    { "id": "tag-upload-result", "name": "Tag Upload Result", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [4160, 580],
+      "parameters": { "mode": "runOnceForEachItem", "jsCode": "const slide = $('Slides To Items').item.json.slide;\nconst fileId = $('Merge Upload Url With Image').item.json.fileId;\nreturn { json: { slideId: slide.slideId, file_id: fileId } };" } },
 
     { "id": "collect-manus-file-ids", "name": "Collect Manus File Ids", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [3900, 580],
       "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Build Slides Index').item.json.job;\nconst results = $input.all();\nconst idBySlide = {};\nfor (const r of results) idBySlide[r.json.slideId] = r.json.file_id;\njob.slides = job.slides.map(s => ({ ...s, manusFileId: idBySlide[s.slideId] ?? null }));\njob.step = 'aligning';\njob.updatedAt = new Date().toISOString();\nreturn [{ json: { job } }];" } },
@@ -172,8 +178,10 @@
     "Build Slides Index": { "main": [[ { "node": "Prepare CP1", "type": "main", "index": 0 }, { "node": "Slides To Items", "type": "main", "index": 0 } ]] },
     "Prepare CP1": { "main": [[ { "node": "Save CP1", "type": "main", "index": 0 } ]] },
     "Slides To Items": { "main": [[ { "node": "Read Slide Image", "type": "main", "index": 0 } ]] },
-    "Read Slide Image": { "main": [[ { "node": "Upload Slide Image", "type": "main", "index": 0 } ]] },
-    "Upload Slide Image": { "main": [[ { "node": "Tag Upload Result", "type": "main", "index": 0 } ]] },
+    "Read Slide Image": { "main": [[ { "node": "Create File Record", "type": "main", "index": 0 } ]] },
+    "Create File Record": { "main": [[ { "node": "Merge Upload Url With Image", "type": "main", "index": 0 } ]] },
+    "Merge Upload Url With Image": { "main": [[ { "node": "Upload File Bytes", "type": "main", "index": 0 } ]] },
+    "Upload File Bytes": { "main": [[ { "node": "Tag Upload Result", "type": "main", "index": 0 } ]] },
     "Tag Upload Result": { "main": [[ { "node": "Collect Manus File Ids", "type": "main", "index": 0 } ]] },
     "Collect Manus File Ids": { "main": [[ { "node": "Build Alignment Task Payload", "type": "main", "index": 0 } ]] },
     "Build Alignment Task Payload": { "main": [[ { "node": "Create Manus Alignment Task", "type": "main", "index": 0 } ]] },

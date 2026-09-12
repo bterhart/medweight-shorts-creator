@@ -54,8 +54,11 @@ decide which slides to drop (title/agenda slides with nothing narrated over them
 
 ## Vision alignment via Manus
 
-Each slide PNG is uploaded to Manus's Files API individually (`Upload Slide Image`) to get a `file_id`,
-then all `file_id`s are attached to a single alignment task (`Create Manus Alignment Task`) along with the
+Each slide PNG is uploaded to Manus's Files API individually — a confirmed two-step flow (`Create File
+Record` → `Merge Upload Url With Image` → `Upload File Bytes`, per Manus's real `file.upload` OpenAPI spec:
+create a file record with just a filename, get back a presigned `upload_url`, PUT the bytes there
+separately) — to get a `file_id`, then all `file_id`s are attached to a single alignment task
+(`Create Manus Alignment Task`) along with the
 full transcript text and per-slide `primary`/`supplementary` role tags, requesting a
 `structured_output_schema` JSON result rather than prose. This means Manus is reasoning over the actual
 slide images, not just OCR'd text — it can align narration to a chart or photo that carries little text.
@@ -85,7 +88,8 @@ for real:
 |---|---|---|
 | Webhook intake, job record, file saving | Solid | Assumes the UI posts multipart fields `srt`, `pdf_0`/`pdf_1`/…, and a `body` JSON with `pdfs: [{filename, role, order, binaryKey}]` — adjust field names to match whatever the UI actually sends |
 | SRT parsing, PDF→PNG/text extraction | Solid, but host-dependent | Requires `poppler-utils` (`pdftoppm`, `pdftotext`, `pdfinfo`) and `ffmpeg`/`ffprobe` installed on the n8n host, and `NODE_FUNCTION_ALLOW_BUILTIN=crypto` set so Code nodes can `require('crypto')` |
-| Manus file upload / create task / poll / structured output | **Verify** (base URL confirmed) | Base URL `https://api.manus.ai` confirmed against Manus's own docs. Still unconfirmed: exact paths (`/v2/files`, `/v2/tasks`, `/v2/tasks/{id}` are assumed), `attachments` shape, `structured_output_schema` field name, and the poll-completion field (`agent_status: "stopped"` per search results) |
+| Manus file upload | **Confirmed and fixed** | Matches the real `file.upload` OpenAPI spec: two-step (create record → PUT bytes to presigned `upload_url`), `file.id` nested under `file`, `{ok, request_id, ...}` envelope on every response |
+| Manus create task / poll / structured output | **Verify** | Base URL confirmed (`https://api.manus.ai`), but exact paths (`/v2/tasks` is assumed), `attachments`/message-content shape, `structured_output_schema` field name, and the poll-completion field (`agent_status: "stopped"` per search results, not the confirmed spec) are still unconfirmed — send the `task.create` and `task.get` doc pages (same OpenAPI-YAML format as `file.upload`) to fix these for real |
 | Anthropic condensation call | Mostly solid | Response parsing assumes `response.content[0].text`, standard for the Messages API, but double check against current API version |
 | ElevenLabs Voice Design / TTS | **Verify** | Endpoint paths and response field names (`voice_id`, binary response handling) should be confirmed against the ElevenLabs API reference you're on |
 | `Read/Write Files from Disk` parameter names (`fileSelector` vs `fileName`, `dataPropertyName`) | **Verify** | These have shifted across n8n versions — re-check each node's Read/Disk tab after import |
