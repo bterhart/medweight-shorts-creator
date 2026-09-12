@@ -138,10 +138,28 @@ def run_alignment(job: dict) -> None:
 
     value = manus_client.poll_task(task_id)
     job["manus"]["status"] = "stopped"
+
+    known_ids = {s["slideId"] for s in job["slides"]}
+
+    def resolve_slide_id(raw_id):
+        """Manus is asked to echo back our slide_id exactly, but with a real
+        (larger, messier) deck it has sometimes returned the attached
+        filename instead (e.g. 'pdf-1-p001.png' instead of 'pdf-1-p001') -
+        confirmed live, not a guess. Strip a trailing image extension before
+        giving up, since that's the one variation actually observed."""
+        if raw_id in known_ids:
+            return raw_id
+        stripped = os.path.splitext(raw_id)[0]
+        if stripped in known_ids:
+            return stripped
+        raise manus_client.ManusTaskError(
+            f"Manus returned slide_id {raw_id!r}, which doesn't match any known slide ID {sorted(known_ids)}"
+        )
+
     job["alignment"] = [
         {
             "sequenceIndex": i,
-            "slideId": a["slide_id"],
+            "slideId": resolve_slide_id(a["slide_id"]),
             "transcriptExcerpt": a["transcript_excerpt"],
             "confidence": a.get("confidence"),
             "notes": a.get("notes", ""),
