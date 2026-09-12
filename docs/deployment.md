@@ -16,8 +16,15 @@ git clone https://github.com/bterhart/medweight-shorts-creator.git chatbot-short
 cPanel → **Setup Python App** → Create Application:
 - Application root: `chatbot-shorts/backend`
 - Application URL: whatever path/subdomain you want this served at (e.g. `chatbot-shorts` → `medweight.ca/chatbot-shorts`)
-- Application startup file: `passenger_wsgi.py`
+- Application startup file: `app_entry.py`
 - Application Entry point: `application`
+
+**Do not name the startup file `passenger_wsgi.py`.** cPanel generates its own file with that exact name at
+the Application Root — a stub that does `imp.load_source('wsgi', '<startup file>')` to load whatever you
+point it at. If the startup file is also named `passenger_wsgi.py`, that stub loads itself, which loads
+itself, forever, until Python raises `RecursionError: maximum recursion depth exceeded` and Passenger fails
+to start with no useful log output at first glance. `app_entry.py` (this repo's actual entry file) sidesteps
+the collision entirely.
 
 cPanel provisions a virtualenv and generates its own wrapper script (the same shape as the existing Twilio
 app's) — you don't write that part by hand. It also prints the exact `pip install` command for that
@@ -29,9 +36,9 @@ source /home/medweight/virtualenv/chatbot-shorts/backend/3.9/bin/activate
 pip install -r /home/medweight/chatbot-shorts/backend/requirements.txt
 ```
 
-## 3. Edit `passenger_wsgi.py` for your actual path
+## 3. Edit `app_entry.py` for your actual path
 
-`backend/passenger_wsgi.py` hardcodes `/home/medweight/chatbot-shorts` — update both `sys.path.insert` lines if
+`backend/app_entry.py` hardcodes `/home/medweight/chatbot-shorts` — update both `sys.path.insert` lines if
 your clone lives somewhere else, matching the existing Twilio app's wrapper script convention.
 
 ## 4. Create the database
