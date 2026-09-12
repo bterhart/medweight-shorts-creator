@@ -70,7 +70,11 @@ def list_messages(task_id: str, limit: int = 10) -> list:
     resp.raise_for_status()
     data = resp.json()
     _check_ok(data, "task.listMessages")
-    return data["messages"]
+    # Immediately after task.create, a 200 response can arrive without a
+    # "messages" key yet (confirmed live) - treat that as "no messages yet"
+    # rather than a hard failure; poll_task already treats an empty list as
+    # "still running".
+    return data.get("messages", [])
 
 
 class ManusWaiting(Exception):
