@@ -14,13 +14,12 @@ import traceback
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root, for render/
 
 import config
 import db
+import fargate_client
 import pipeline
 from manus_client import ManusWaiting, ManusTaskError
-from render.render import render as render_video
 
 
 def now_iso():
@@ -89,39 +88,68 @@ def run_prepare_pipeline(job: dict) -> None:
 
 
 def run_render(job: dict) -> None:
-    overrides = job.get("render", {}).get("pendingOverrides") or {}
+    """Dispatches a Fargate render task on the first tick a job enters phase
+    'rendering', then polls that task's status on every later tick until it
+    stops (or times out) - never blocks the cron worker on the render
+    itself, unlike the old in-process version."""
+    render_state = job.setdefault("render", {})
+    task_arn = render_state.get("fargateTaskArn")
+
+    if not task_arn:
+        try:
+            overrides = render_state.get("pendingOverrides") or {}
+            render_count = render_state.get("renderCount", 0) + 1
+            task_arn = fargate_client.dispatch_render(job, render_count)
+            render_state["fargateTaskArn"] = task_arn
+            render_state["fargatePendingRenderCount"] = render_count
+            render_state["fargateAppliedOverrides"] = overrides
+            render_state["fargateDispatchedAt"] = now_iso()
+            db.save_job(job)
+        except Exception as e:
+            fail_job(job, "rendering", f"{type(e).__name__}: {e}", traceback.format_exc())
+        return
+
     try:
-        final_video, ttype, resolution = render_video(
-            job,
-            transition_override={k: v for k, v in overrides.items() if k in ("type", "transitionSeconds", "minSlideSeconds")} or None,
-            resolution_override=overrides.get("resolution"),
-        )
-        job_dir = os.path.join(config.DATA_DIR, "jobs", job["jobId"])
-        out_dir = os.path.join(job_dir, "output")
-        os.makedirs(out_dir, exist_ok=True)
-        render_count = job.get("render", {}).get("renderCount", 0) + 1
-        out_path = os.path.join(out_dir, f"video-{render_count:02d}.mp4")
+        status = fargate_client.check_task(task_arn)
+    except Exception as e:
+        fail_job(job, "rendering", f"{type(e).__name__}: {e}", traceback.format_exc())
+        return
 
-        final_video.write_videofile(
-            out_path, fps=30, codec="libx264", audio_codec="aac", logger=None,
-            ffmpeg_params=["-movflags", "+faststart"],
-        )
+    if status["state"] == "running":
+        dispatched_at = datetime.fromisoformat(render_state["fargateDispatchedAt"])
+        elapsed = (datetime.now(timezone.utc) - dispatched_at).total_seconds()
+        if elapsed > config.RENDER_TIMEOUT_MINUTES * 60:
+            fail_job(
+                job, "rendering", "Fargate render task timed out",
+                f"task {task_arn} still running after {config.RENDER_TIMEOUT_MINUTES} minutes",
+            )
+        return
 
+    if status["state"] == "succeeded":
+        render_count = render_state.pop("fargatePendingRenderCount")
+        overrides = render_state.pop("fargateAppliedOverrides", {})
+        output_url = fargate_client.presigned_output_url(job["jobId"], render_count)
+        now = now_iso()
         history_entry = {
-            "renderCount": render_count, "renderedAt": now_iso(), "outputPath": out_path,
-            "transition": {**job["params"]["transition"], **overrides, "type": ttype}, "resolution": resolution,
+            "renderCount": render_count,
+            "renderedAt": now,
+            "outputUrl": output_url,
+            "transition": {**job["params"]["transition"], **overrides},
+            "resolution": overrides.get("resolution") or job["params"].get("resolution", "640x360"),
         }
-        job.setdefault("render", {})
-        job["render"].setdefault("history", []).append(history_entry)
-        job["render"]["renderedAt"] = history_entry["renderedAt"]
-        job["render"]["outputPath"] = out_path
-        job["render"]["renderCount"] = render_count
-        job["render"].pop("pendingOverrides", None)
+        render_state.setdefault("history", []).append(history_entry)
+        render_state["renderedAt"] = now
+        render_state["outputUrl"] = output_url
+        render_state["renderCount"] = render_count
+        render_state.pop("pendingOverrides", None)
+        render_state.pop("fargateTaskArn", None)
+        render_state.pop("fargateDispatchedAt", None)
         job["phase"] = "done"
         job["step"] = "done"
         db.save_job(job)
-    except Exception as e:
-        fail_job(job, "rendering", f"{type(e).__name__}: {e}", traceback.format_exc())
+        return
+
+    fail_job(job, "rendering", "Fargate render task failed", status.get("detail", ""))
 
 
 def main():

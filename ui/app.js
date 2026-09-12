@@ -319,7 +319,7 @@ function showReview(job) {
   $("render-transition-seconds").value = job.params.transition.transitionSeconds;
   $("render-min-slide-seconds").value = job.params.transition.minSlideSeconds;
 
-  if (job.phase === "done" && job.render && job.render.outputPath) {
+  if (job.phase === "done" && job.render && (job.render.outputUrl || job.render.outputPath)) {
     showResult(job);
   }
 }
@@ -364,7 +364,10 @@ $("render-btn").addEventListener("click", async () => {
 
 function showResult(job) {
   $("result-section").hidden = false;
-  const url = fileUrl(job.render.outputPath);
+  // outputUrl (a presigned S3 URL from the Fargate render) is used directly;
+  // outputPath (an old in-process render's local server path) still needs
+  // the /files proxy - kept for any job rendered before this change.
+  const url = job.render.outputUrl || fileUrl(job.render.outputPath);
   $("result-video").src = url;
   $("result-download").href = url;
   $("result-download").download = `chatbot-shorts-${job.jobId}.mp4`;
