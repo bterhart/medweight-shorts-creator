@@ -1,8 +1,8 @@
-// Waterway Narrator UI — talks to the three n8n webhooks:
-//   POST {apiBase}/jobs                  (phase1-prepare.workflow.json)
-//   GET  {apiBase}/jobs/:jobId/status    (status.workflow.json)
-//   POST {apiBase}/jobs/:jobId/render    (render-trigger.workflow.json)
-//   GET  {apiBase}/files?path=...        (files.workflow.json), for slide images/audio/video
+// Chatbot Shorts UI — talks to the backend's four endpoints (backend/app.py):
+//   POST {apiBase}/jobs                  create a job
+//   GET  {apiBase}/jobs/:jobId/status    poll job status
+//   POST {apiBase}/jobs/:jobId/render    trigger a render
+//   GET  {apiBase}/files?path=...        slide images/audio/video
 
 const STEP_ORDER = [
   ["queued", "Queued"],
@@ -367,7 +367,7 @@ function showResult(job) {
   const url = fileUrl(job.render.outputPath);
   $("result-video").src = url;
   $("result-download").href = url;
-  $("result-download").download = `waterway-narrator-${job.jobId}.mp4`;
+  $("result-download").download = `chatbot-shorts-${job.jobId}.mp4`;
   $("result-section").scrollIntoView({ behavior: "smooth" });
 }
 

@@ -4,7 +4,7 @@ wrapper script structure. Adjust the path below to wherever this repo
 actually lives on the server."""
 import sys
 
-sys.path.insert(0, "/home/medweight/waterway-narrator/backend")
-sys.path.insert(0, "/home/medweight/waterway-narrator")  # repo root, for render/
+sys.path.insert(0, "/home/medweight/chatbot-shorts/backend")
+sys.path.insert(0, "/home/medweight/chatbot-shorts")  # repo root, for render/
 
 from app import app as application  # noqa: E402

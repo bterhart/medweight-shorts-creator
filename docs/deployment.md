@@ -8,14 +8,14 @@ convention. Adjust paths if your actual layout differs.
 
 ```bash
 cd /home/medweight
-git clone https://github.com/bterhart/medweight-shorts-creator.git waterway-narrator
+git clone https://github.com/bterhart/medweight-shorts-creator.git chatbot-shorts
 ```
 
 ## 2. Create the Python App in cPanel
 
 cPanel → **Setup Python App** → Create Application:
-- Application root: `waterway-narrator/backend`
-- Application URL: whatever path/subdomain you want this served at (e.g. `waterway` → `medweight.ca/waterway`)
+- Application root: `chatbot-shorts/backend`
+- Application URL: whatever path/subdomain you want this served at (e.g. `chatbot-shorts` → `medweight.ca/chatbot-shorts`)
 - Application startup file: `wsgi.py`
 - Application Entry point: `application`
 
@@ -25,24 +25,24 @@ virtualenv; use it (not a bare system `pip3 install`) for the next step:
 
 ```bash
 # cPanel shows you the real path; it looks like this:
-source /home/medweight/virtualenv/waterway-narrator/backend/3.9/bin/activate
-pip install -r /home/medweight/waterway-narrator/backend/requirements.txt
+source /home/medweight/virtualenv/chatbot-shorts/backend/3.9/bin/activate
+pip install -r /home/medweight/chatbot-shorts/backend/requirements.txt
 ```
 
 ## 3. Edit `wsgi.py` for your actual path
 
-`backend/wsgi.py` hardcodes `/home/medweight/waterway-narrator` — update both `sys.path.insert` lines if
+`backend/wsgi.py` hardcodes `/home/medweight/chatbot-shorts` — update both `sys.path.insert` lines if
 your clone lives somewhere else, matching the existing Twilio app's wrapper script convention.
 
 ## 4. Create the database
 
 ```bash
 mysql -u root -p -e "
-CREATE DATABASE waterway_narrator;
-CREATE USER 'waterway'@'localhost' IDENTIFIED BY 'CHANGE_ME';
-GRANT ALL ON waterway_narrator.* TO 'waterway'@'localhost';
+CREATE DATABASE chatbot_shorts;
+CREATE USER 'chatbot_shorts'@'localhost' IDENTIFIED BY 'CHANGE_ME';
+GRANT ALL ON chatbot_shorts.* TO 'chatbot_shorts'@'localhost';
 "
-mysql -u waterway -p waterway_narrator < /home/medweight/waterway-narrator/backend/schema.sql
+mysql -u chatbot_shorts -p chatbot_shorts < /home/medweight/chatbot-shorts/backend/schema.sql
 ```
 
 (Or use cPanel's MySQL Databases UI instead of the CLI — same end state. `MedWeight MySQL` already exists
@@ -53,7 +53,7 @@ host/user/password/database you choose.)
 ## 5. Configure secrets
 
 ```bash
-cp /home/medweight/waterway-narrator/backend/.env.example /home/medweight/waterway-narrator/backend/.env
+cp /home/medweight/chatbot-shorts/backend/.env.example /home/medweight/chatbot-shorts/backend/.env
 ```
 
 Fill in `.env`: DB credentials from step 4, plus `MANUS_API_KEY` / `ELEVENLABS_API_KEY` /
@@ -66,7 +66,7 @@ cPanel's Python App page has a **Restart** button (touches a `tmp/restart.txt` f
 Then:
 
 ```bash
-curl -s https://medweight.ca/waterway/jobs/nonexistent/status
+curl -s https://medweight.ca/chatbot-shorts/jobs/nonexistent/status
 # expect: {"error": "not found"} with a 404 - confirms the Flask app is actually running
 ```
 
@@ -75,7 +75,7 @@ curl -s https://medweight.ca/waterway/jobs/nonexistent/status
 cPanel → **Cron Jobs** → Add New Cron Job, every minute:
 
 ```
-* * * * * /home/medweight/virtualenv/waterway-narrator/backend/3.9/bin/python3 /home/medweight/waterway-narrator/backend/worker.py >> /home/medweight/waterway-narrator/worker.log 2>&1
+* * * * * /home/medweight/virtualenv/chatbot-shorts/backend/3.9/bin/python3 /home/medweight/chatbot-shorts/backend/worker.py >> /home/medweight/chatbot-shorts/worker.log 2>&1
 ```
 
 Use the **virtualenv's** python (the path cPanel showed you in step 2), not the system `python3` — the
@@ -85,22 +85,22 @@ venv is where `requirements.txt` actually got installed.
 
 Serve `ui/` however you like (it's static files — could even be another cPanel subdomain, or served from
 your own machine while testing). Open it, click **Settings**, set the webhook base URL to wherever the
-Flask app is reachable — e.g. `https://medweight.ca/waterway` (no trailing slash; `app.js` appends `/jobs`,
-`/files`, etc. itself).
+Flask app is reachable — e.g. `https://medweight.ca/chatbot-shorts` (no trailing slash; `app.js` appends
+`/jobs`, `/files`, etc. itself).
 
 ## 9. Verifying a real end-to-end run
 
 1. Submit a job through the UI (or `curl -F params=... -F srt=@... -F pdf_0=@...` directly against
-   `POST /waterway/jobs`) — should get `{"jobId": ..., "phase": "prepare", "step": "saving_inputs"}` back
-   immediately.
+   `POST /chatbot-shorts/jobs`) — should get `{"jobId": ..., "phase": "prepare", "step": "saving_inputs"}`
+   back immediately.
 2. Watch `worker.log` — the next cron tick (within a minute) should print `claimed job <id> (phase=prepare)`
    and start working through it. If it never claims anything, check the cron job actually points at the
    venv's Python and that `backend/.env` has real DB credentials.
-3. Poll `GET /waterway/jobs/<id>/status` (or just watch the UI) until `phase` reaches `ready_for_render` or
-   `failed`. A `failed` phase's `error.detail` field has the full Python traceback — that's the first place
-   to look.
-4. Once `ready_for_render`, trigger a render (UI button, or `POST /waterway/jobs/<id>/render`) and watch
-   the next cron tick pick it up the same way.
+3. Poll `GET /chatbot-shorts/jobs/<id>/status` (or just watch the UI) until `phase` reaches
+   `ready_for_render` or `failed`. A `failed` phase's `error.detail` field has the full Python traceback —
+   that's the first place to look.
+4. Once `ready_for_render`, trigger a render (UI button, or `POST /chatbot-shorts/jobs/<id>/render`) and
+   watch the next cron tick pick it up the same way.
 
 ## Before this is anything but a test
 

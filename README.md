@@ -1,4 +1,4 @@
-# Waterway Narrator
+# Chatbot Shorts
 
 Turns a video transcript (`.srt`) plus its presentation slides (`.pdf`) into a short narrated video:
 Manus aligns transcript to slides, Claude condenses the narration to a target length, ElevenLabs voices it,
