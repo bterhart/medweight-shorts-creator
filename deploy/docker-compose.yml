@@ -1,0 +1,31 @@
+services:
+  n8n:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    # Every relative path in this repo's workflows (render/render.py,
+    # data/jobs/...) resolves against this - it MUST be the repo root as
+    # seen inside the container.
+    working_dir: /repo
+    environment:
+      - NODE_FUNCTION_ALLOW_BUILTIN=crypto
+      # Execute Command is disabled by default since n8n 2.0; this is the
+      # only documented way to re-enable it.
+      - NODES_EXCLUDE=[]
+      # Testing over plain http://<ip>:5678 only - remove this once a
+      # reverse proxy with real TLS is in front of n8n (see docs/deployment.md
+      # section 7; webhooks over plain HTTP are not something to leave running).
+      - N8N_SECURE_COOKIE=false
+    volumes:
+      # The whole repo, read-write, so render.py's own output (data/jobs/)
+      # persists on the host and survives container recreation.
+      - ..:/repo
+      # n8n's own workflows/credentials/execution history - NOT the same
+      # thing as this repo's data/, and must persist independently.
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:

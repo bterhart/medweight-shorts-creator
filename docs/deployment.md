@@ -1,9 +1,23 @@
 # Deployment — what goes where
 
-This assumes a self-hosted n8n instance (npm/binary install or a systemd service — not the Docker image,
-which needs extra volume/working-directory setup this guide doesn't cover). n8n's `Execute Command` and
-`Read/Write Files from Disk` nodes operate on paths **relative to n8n's own process working directory**,
-so the whole point of this guide is: n8n must be started with this repo as its working directory.
+**This must be self-hosted n8n, not n8n Cloud.** Confirmed the hard way: n8n Cloud permanently disables the
+`Execute Command` node (not a config toggle — unavailable on shared infrastructure for security reasons)
+and `Read/Write Files from Disk` only works when files already live on the same server n8n runs on, which
+Cloud gives you no access to. Both are load-bearing for this repo (PDF extraction, the render script,
+`data/jobs/` persistence), so n8n Cloud cannot run this design at all.
+
+**For an actual VM, use `deploy/` instead of this section** — a ready Dockerfile + docker-compose.yml that
+bakes in ffmpeg/poppler-utils/python3+moviepy alongside n8n, which is both more realistic (almost nobody
+self-hosts n8n bare-metal today) and avoids a second n8n-2.0-era gotcha: **Execute Command is disabled by
+default even self-hosted now**, requiring `NODES_EXCLUDE=[]` explicitly set (already in
+`deploy/docker-compose.yml`; add it yourself if installing n8n any other way). The rest of this doc
+(sections 4 onward: importing workflows, credentials, the UI, security, verification) applies identically
+regardless of how n8n itself is hosted — only sections 1–3 below are bare-metal-specific and superseded by
+`deploy/README.md`.
+
+n8n's `Execute Command` and `Read/Write Files from Disk` nodes operate on paths **relative to n8n's own
+process working directory**, so however it's hosted, n8n must be started with this repo as its working
+directory — that's what `deploy/docker-compose.yml`'s `working_dir: /repo` does for the Docker path.
 
 ## 1. Prerequisites on the n8n host
 
@@ -47,14 +61,16 @@ video — it's disk state, not code, so it's `.gitignore`d, not committed.
 
 ## 3. Start n8n with this repo as its working directory
 
-Two required environment variables: `NODE_FUNCTION_ALLOW_BUILTIN=crypto` (several Code nodes use
-`require('crypto')` to generate job IDs) — some n8n versions also need `path` in that list
-(`crypto,path`) if a Code node's `require('path')` call is rejected; try without it first.
+Three required environment variables: `NODE_FUNCTION_ALLOW_BUILTIN=crypto` (several Code nodes use
+`require('crypto')` to generate job IDs — some n8n versions also need `path` in that list, `crypto,path`,
+if a Code node's `require('path')` call is rejected; try without it first), and **`NODES_EXCLUDE=[]`** —
+since n8n 2.0, Execute Command is disabled by default even self-hosted, and this is the only documented
+way to re-enable it. Skipping this makes every Execute Command node fail immediately.
 
 **Plain process / screen / tmux (quickest to verify things work):**
 ```bash
 cd /opt/medweight-shorts-creator
-NODE_FUNCTION_ALLOW_BUILTIN=crypto n8n start
+NODE_FUNCTION_ALLOW_BUILTIN=crypto NODES_EXCLUDE=[] n8n start
 ```
 
 **systemd service (recommended for anything left running):**
@@ -68,6 +84,7 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/medweight-shorts-creator
 Environment=NODE_FUNCTION_ALLOW_BUILTIN=crypto
+Environment=NODES_EXCLUDE=[]
 ExecStart=/usr/bin/n8n start
 Restart=on-failure
 User=n8n
