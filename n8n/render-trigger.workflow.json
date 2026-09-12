@@ -11,23 +11,27 @@
     { "id": "build-render-command", "name": "Build Render Command", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [260, 0],
       "parameters": { "mode": "runOnceForAllItems", "jsCode": "const jobId = $input.item.json.params.jobId;\nconst body = $input.item.json.body || {};\n\nconst safe = (s) => String(s).replace(/[^a-zA-Z0-9_.:-]/g, '');\nconst args = [`python3 render/render.py ${safe(jobId)} --data-dir data`];\nif (body.transitionType) args.push(`--transition-type ${safe(body.transitionType)}`);\nif (body.transitionSeconds != null) args.push(`--transition-seconds ${Number(body.transitionSeconds)}`);\nif (body.minSlideSeconds != null) args.push(`--min-slide-seconds ${Number(body.minSlideSeconds)}`);\nif (body.resolution) args.push(`--resolution ${safe(body.resolution)}`);\n\nreturn [{ json: { jobId, command: args.join(' ') } }];" } },
 
-    { "id": "run-render", "name": "Run Render Script", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1, "position": [520, 0],
-      "parameters": { "command": "={{$json.command}}" } },
-
-    { "id": "read-updated-job", "name": "Read Updated job.json", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [780, 0],
+    { "id": "read-job-for-marking", "name": "Read Job For Marking", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [520, 0],
       "parameters": { "operation": "read", "fileSelector": "=data/jobs/{{$('Build Render Command').item.json.jobId}}/job.json", "options": { "dataPropertyName": "data" } } },
 
-    { "id": "parse-updated-job", "name": "Parse Updated job.json", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1040, 0],
-      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const buf = await this.helpers.binaryToBuffer($input.item.binary.data);\nconst job = JSON.parse(buf.toString('utf-8'));\nreturn [{ json: { job } }];" } },
+    { "id": "mark-rendering", "name": "Mark Rendering", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [780, 0],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const buf = await this.helpers.binaryToBuffer($input.item.binary.data);\nconst job = JSON.parse(buf.toString('utf-8'));\njob.phase = 'rendering';\njob.step = 'rendering';\njob.updatedAt = new Date().toISOString();\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(JSON.stringify(job, null, 2)), 'job.json', 'application/json');\nreturn [{ json: { job, jobJsonPath: `data/jobs/${job.jobId}/job.json` }, binary: { jobJson: binary } }];" } },
 
-    { "id": "respond-render", "name": "Respond Render Result", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [1300, 0],
-      "parameters": { "respondWith": "json", "responseBody": "={{$json.job}}" } }
+    { "id": "save-rendering-state", "name": "Save Rendering State", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [1040, 0],
+      "parameters": { "operation": "write", "fileName": "={{$json.jobJsonPath}}", "dataPropertyName": "jobJson", "options": {} } },
+
+    { "id": "launch-render-background", "name": "Launch Render Background", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1, "position": [1300, 0],
+      "parameters": { "command": "=nohup {{$('Build Render Command').item.json.command}} > data/jobs/{{$('Build Render Command').item.json.jobId}}/render.log 2>&1 & disown; echo launched" } },
+
+    { "id": "respond-render-started", "name": "Respond Render Started", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [1560, 0],
+      "parameters": { "respondWith": "json", "responseBody": "={{ { jobId: $('Mark Rendering').item.json.job.jobId, phase: $('Mark Rendering').item.json.job.phase, step: $('Mark Rendering').item.json.job.step } }}" } }
   ],
   "connections": {
     "Webhook": { "main": [[ { "node": "Build Render Command", "type": "main", "index": 0 } ]] },
-    "Build Render Command": { "main": [[ { "node": "Run Render Script", "type": "main", "index": 0 } ]] },
-    "Run Render Script": { "main": [[ { "node": "Read Updated job.json", "type": "main", "index": 0 } ]] },
-    "Read Updated job.json": { "main": [[ { "node": "Parse Updated job.json", "type": "main", "index": 0 } ]] },
-    "Parse Updated job.json": { "main": [[ { "node": "Respond Render Result", "type": "main", "index": 0 } ]] }
+    "Build Render Command": { "main": [[ { "node": "Read Job For Marking", "type": "main", "index": 0 } ]] },
+    "Read Job For Marking": { "main": [[ { "node": "Mark Rendering", "type": "main", "index": 0 } ]] },
+    "Mark Rendering": { "main": [[ { "node": "Save Rendering State", "type": "main", "index": 0 } ]] },
+    "Save Rendering State": { "main": [[ { "node": "Launch Render Background", "type": "main", "index": 0 } ]] },
+    "Launch Render Background": { "main": [[ { "node": "Respond Render Started", "type": "main", "index": 0 } ]] }
   }
 }

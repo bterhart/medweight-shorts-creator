@@ -118,7 +118,7 @@ def render(job, transition_override=None, resolution_override=None):
         transition.update(transition_override)
     ttype = transition["type"]
     tsec = transition.get("transitionSeconds", 0.75)
-    resolution = resolution_override or job["params"].get("resolution", "1920x1080")
+    resolution = resolution_override or job["params"].get("resolution", "640x360")
     target_w, target_h = parse_resolution(resolution)
 
     # minSlideSeconds may also have been overridden; build_segments reads it
@@ -182,7 +182,10 @@ def main():
         sys.exit(f"No job.json at {job_path}")
     job = json.loads(job_path.read_text())
 
-    if job["phase"] not in ("ready_for_render", "done"):
+    # "rendering" is included because the trigger that launches this script
+    # in the background writes that phase to job.json first (so status polls
+    # reflect progress immediately), then hands off to this process.
+    if job["phase"] not in ("ready_for_render", "rendering", "done"):
         sys.exit(f"Job {args.job_id} is not ready for render (phase={job['phase']}).")
 
     transition_override = {}

@@ -18,6 +18,16 @@ const STEP_ORDER = [
   ["ready_for_render", "Ready for review"],
 ];
 
+// Resolution is chosen at render time (Phase 2), not at intake - it doesn't
+// affect alignment/narration/voice, and defaulting low keeps iteration fast.
+// "Full" (1080p) took ~100s for a trivial 3-segment clip in testing; pick it
+// only for the render you're keeping.
+const RESOLUTION_MAP = {
+  "16:9": { preview: "640x360", standard: "1280x720", full: "1920x1080" },
+  "9:16": { preview: "360x640", standard: "720x1280", full: "1080x1920" },
+  "1:1": { preview: "480x480", standard: "720x720", full: "1080x1080" },
+};
+
 const state = {
   pdfs: [], // { file, filename, role: 'primary'|'supplementary' }
   duration: 90,
@@ -174,8 +184,6 @@ $("submit-btn").addEventListener("click", async () => {
       transitionSeconds: Number($("transition-seconds").value),
       minSlideSeconds: Number($("min-slide-seconds").value),
     },
-    aspectRatio: $("aspect-select").selectedOptions[0].dataset.ratio,
-    resolution: $("aspect-select").value,
     srtFilename: srtFile.name,
     pdfs: state.pdfs.map((p, i) => ({ filename: p.filename, role: p.role, order: i, binaryKey: `pdf_${i}` })),
   };
@@ -196,7 +204,7 @@ $("submit-btn").addEventListener("click", async () => {
     $("progress-section").hidden = false;
     $("progress-job-id").textContent = state.jobId;
     renderStepList(data.step);
-    startPolling();
+    startPolling("prepare");
   } catch (err) {
     showError($("setup-error"), `Failed to start job: ${err.message}`);
     $("submit-btn").disabled = false;
@@ -220,7 +228,8 @@ function renderStepList(currentStep) {
 }
 
 // ---------- polling ----------
-function startPolling() {
+function startPolling(context) {
+  state.pollContext = context; // 'prepare' (Phase 1) or 'render' (Phase 2)
   clearInterval(state.pollTimer);
   state.pollTimer = setInterval(pollStatus, 3000);
   pollStatus();
@@ -235,19 +244,37 @@ async function pollStatus() {
 
     if (job.phase === "failed") {
       clearInterval(state.pollTimer);
-      showError($("progress-error"), job.error ? job.error.message : "Job failed.");
+      const message = job.error ? job.error.message : "Job failed.";
+      if (state.pollContext === "render") {
+        $("render-status").hidden = true;
+        $("render-btn").disabled = false;
+        showError($("render-error"), message);
+      } else {
+        showError($("progress-error"), message);
+      }
+      return;
+    }
+
+    if (state.pollContext === "render") {
+      if (job.phase === "done") {
+        clearInterval(state.pollTimer);
+        $("render-status").hidden = true;
+        $("render-btn").disabled = false;
+        showResult(job);
+      }
+      // still "rendering" - nothing to update, #render-status already shows the in-progress message
       return;
     }
 
     renderStepList(job.step);
-
     if (job.phase === "ready_for_render" || job.phase === "done") {
       clearInterval(state.pollTimer);
       $("progress-section").hidden = true;
       showReview(job);
     }
   } catch (err) {
-    showError($("progress-error"), `Lost contact with server: ${err.message}`);
+    const target = state.pollContext === "render" ? $("render-error") : $("progress-error");
+    showError(target, `Lost contact with server: ${err.message}`);
   }
 }
 
@@ -298,16 +325,26 @@ function showReview(job) {
 }
 
 // ---------- render (Phase 2) ----------
+// The render-trigger webhook acks almost immediately (it backgrounds the
+// actual render and returns phase="rendering") specifically so this never
+// risks an HTTP timeout, no matter how long a Full/1080p render takes -
+// completion is picked up by polling the same status endpoint Phase 1 uses.
 $("render-btn").addEventListener("click", async () => {
   showError($("render-error"), "");
   $("render-btn").disabled = true;
   $("render-status").hidden = false;
-  $("render-status").textContent = "Rendering… this runs locally and is usually quick, but can take a while for longer videos.";
+
+  const quality = $("render-quality").value;
+  const aspect = $("render-aspect").value;
+  const resolution = RESOLUTION_MAP[aspect][quality];
+  $("render-status").textContent = `Rendering at ${resolution} (${quality})… `
+    + (quality === "full" ? "Full/1080p renders can take a minute or more." : "should only take a few seconds.");
 
   const body = {
     transitionType: $("render-transition-type").value,
     transitionSeconds: Number($("render-transition-seconds").value),
     minSlideSeconds: Number($("render-min-slide-seconds").value),
+    resolution,
   };
 
   try {
@@ -317,14 +354,11 @@ $("render-btn").addEventListener("click", async () => {
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`Server responded ${res.status}`);
-    const job = await res.json();
-    state.currentJob = job;
-    $("render-status").hidden = true;
-    showResult(job);
+    startPolling("render");
   } catch (err) {
-    showError($("render-error"), `Render failed: ${err.message}`);
-  } finally {
+    $("render-status").hidden = true;
     $("render-btn").disabled = false;
+    showError($("render-error"), `Failed to start render: ${err.message}`);
   }
 });
 

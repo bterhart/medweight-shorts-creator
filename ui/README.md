@@ -40,12 +40,13 @@ render → result with a working video. Two real bugs were caught and fixed this
 
 ## Two things worth knowing before you deploy this for real
 
-**1080p rendering is slow.** A 3-segment, 7.5s test video at 1920x1080 with a crossfade transition took
-~100 seconds to render via MoviePy in this environment. That's fine for the dry-run-then-render workflow
-(rendering is meant to be the cheap, repeatable step), but it means a full 3-5 minute video with many more
-segments could take several minutes per render, not seconds — and n8n's webhook timeout (`render-trigger`
-calls the render script synchronously) needs to be raised accordingly, or the trigger changed to
-fire-and-poll like Phase 1 does. Size expectations around this before demoing it live.
+**1080p rendering is slow — ~100 seconds for a trivial 3-segment, 7.5s test clip via MoviePy.** A full
+3-5 minute video with many more segments could take several minutes. Two changes address this rather than
+just working around it: (1) `render-trigger.workflow.json` is now async — it backgrounds the render and
+acks in milliseconds regardless of resolution or video length, so it can't hit n8n's webhook timeout no
+matter how slow a render gets (see `docs/phase2-render-trigger.md`); (2) resolution is chosen at render
+time with a Preview/Standard/Full tier (`ui/app.js`'s `RESOLUTION_MAP`), defaulting to Preview (640x360)
+so the normal iterate-on-transitions loop stays fast — Full/1080p is opt-in for the render you're keeping.
 
 **Browsers probe video files with `HEAD` before the ranged `GET`.** This was invisible until actually
 tested in a browser: a `<video>` element failed to load at all — not slowly, not with a visible error, just
