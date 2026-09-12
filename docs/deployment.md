@@ -112,12 +112,17 @@ from where I built this. `xi-api-key` and `x-api-key` are ElevenLabs' and Anthro
 header names respectively.) Use whatever keys you're issuing after rotating the ones pasted earlier in
 this conversation — never keys that have appeared in a chat transcript.
 
-**Still needed from you before Manus calls will work at all:** the actual API base URL. Every
-Manus-calling node (`Upload Slide Image`, `Create Manus Alignment Task`, `Get Manus Task` in
-`phase1-prepare.workflow.json`) currently points at `https://api.manus.ai/v2/...` as a placeholder — check
-your Manus dashboard's quickstart/API reference page for the real host (I've seen both `manus.ai` and
-`manus.im` referenced in different places and couldn't confirm which is authoritative from here) and send
-it over so I can fix those three node URLs.
+**Base URL confirmed:** `https://api.manus.ai`, per Manus's own docs — matches what the three Manus-calling
+nodes (`Upload Slide Image`, `Create Manus Alignment Task`, `Get Manus Task` in
+`phase1-prepare.workflow.json`) already use, so no URL changes were needed there.
+
+**Still unconfirmed:** the exact paths and field names under that host. The nodes currently assume
+`POST /v2/files` (upload, response field `file_id`), `POST /v2/tasks` (create, response field `task_id`,
+request field `structured_output_schema`), and `GET /v2/tasks/{id}` (poll, with `agent_status: "stopped"`
+signaling completion) — all drafted from third-party SDK/doc summaries, not a first-hand read of
+`https://api.manus.ai`'s reference. If you can grab the actual request/response shape for "create task"
+and "get task" from the same docs page (sanitized, no key), I'll correct these against the real thing
+rather than continuing to guess.
 
 ## 6. The UI
 
