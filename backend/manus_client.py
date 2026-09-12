@@ -89,7 +89,19 @@ def poll_task(task_id: str, timeout_s: int = 600, interval_s: int = 8) -> dict:
     how those map to job.phase."""
     deadline = time.time() + timeout_s
     while True:
-        messages = list_messages(task_id)
+        try:
+            messages = list_messages(task_id)
+        except requests.exceptions.HTTPError as e:
+            # Immediately after task.create, task.listMessages can 404 for a
+            # brief window before the task is queryable (eventual
+            # consistency on Manus's end) - treat that like "still running"
+            # rather than failing the job outright.
+            if e.response is not None and e.response.status_code == 404:
+                if time.time() >= deadline:
+                    raise TimeoutError(f"Manus task {task_id} did not finish within {timeout_s}s")
+                time.sleep(interval_s)
+                continue
+            raise
         status_msg = next((m for m in messages if m["type"] == "status_update"), None)
         agent_status = status_msg["status_update"]["agent_status"] if status_msg else "running"
 
