@@ -1,6 +1,8 @@
 """Manus API v2 client - every call here matches a confirmed OpenAPI spec
 pasted directly from Manus's own docs during development (file.upload,
 task.create, task.listMessages), not a third-party summary."""
+from __future__ import annotations
+
 import time
 
 import requests
