@@ -88,15 +88,21 @@
     { "id": "wait-before-poll", "name": "Wait Before Poll", "type": "n8n-nodes-base.wait", "typeVersion": 1.1, "position": [4680, 580],
       "parameters": { "amount": 8, "unit": "seconds" } },
 
-    { "id": "get-manus-task", "name": "Get Manus Task", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [4940, 580],
-      "parameters": { "method": "GET", "url": "=https://api.manus.ai/v2/tasks/{{$('Create Manus Alignment Task').item.json.task_id}}", "options": {} },
+    { "id": "list-task-messages", "name": "List Task Messages", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [4940, 580],
+      "parameters": { "method": "GET", "url": "=https://api.manus.ai/v2/task.listMessages?task_id={{$('Create Manus Alignment Task').item.json.task_id}}&order=desc&limit=10", "options": {} },
       "credentials": { "httpHeaderAuth": { "id": "REPLACE_ME", "name": "Manus API" } } },
 
-    { "id": "is-manus-done", "name": "Is Manus Task Done", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [5200, 580],
-      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{$json.agent_status}}", "rightValue": "stopped", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" } } },
+    { "id": "check-task-status", "name": "Check Task Status", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [5060, 580],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "// order=desc means newest first, so the first status_update we hit is the\n// current one - no need to scan the whole page.\nconst messages = $input.item.json.messages || [];\nconst statusMsg = messages.find(m => m.type === 'status_update');\nconst agentStatus = statusMsg ? statusMsg.status_update.agent_status : 'running';\nreturn [{ json: { agentStatus, messages } }];" } },
 
-    { "id": "parse-alignment-result", "name": "Parse Alignment Result", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [5460, 500],
-      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Collect Manus File Ids').item.json.job;\nconst resp = $input.item.json;\njob.manus.status = resp.agent_status || resp.status;\njob.alignment = (resp.structured_output?.alignment || []).map((a, i) => ({\n  sequenceIndex: i,\n  slideId: a.slide_id,\n  transcriptExcerpt: a.transcript_excerpt,\n  confidence: a.confidence ?? null,\n  notes: a.notes || ''\n}));\njob.step = 'condensing_narration';\njob.updatedAt = new Date().toISOString();\nreturn [{ json: { job } }];" } },
+    { "id": "is-manus-done", "name": "Is Manus Task Done", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [5320, 580],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{$json.agentStatus}}", "rightValue": "running", "operator": { "type": "string", "operation": "notEquals" } } ], "combinator": "and" } } },
+
+    { "id": "parse-alignment-result", "name": "Parse Alignment Result", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [5580, 500],
+      "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Collect Manus File Ids').item.json.job;\nconst { agentStatus, messages } = $input.item.json;\njob.manus.status = agentStatus;\n\nif (agentStatus === 'stopped') {\n  const resultMsg = messages.find(m => m.type === 'structured_output_result');\n  const outcome = resultMsg?.structured_output_result;\n  if (!outcome || !outcome.success || !outcome.value) {\n    job.phase = 'failed';\n    job.error = { step: 'aligning', message: 'Manus stopped without a usable structured_output_result', detail: outcome?.error || '' };\n  } else {\n    job.alignment = (outcome.value.alignment || []).map((a, i) => ({\n      sequenceIndex: i,\n      slideId: a.slide_id,\n      transcriptExcerpt: a.transcript_excerpt,\n      confidence: a.confidence ?? null,\n      notes: a.notes || ''\n    }));\n    job.step = 'condensing_narration';\n  }\n} else if (agentStatus === 'error') {\n  const errMsg = messages.find(m => m.type === 'error_message');\n  job.phase = 'failed';\n  job.error = { step: 'aligning', message: errMsg?.error_message?.content || 'Manus task errored', detail: errMsg?.error_message?.error_type || '' };\n} else if (agentStatus === 'waiting') {\n  // This pipeline doesn't implement task.sendMessage/task.confirmAction -\n  // a pure structured-output extraction shouldn't normally hit this, but\n  // surface it clearly rather than polling forever if it does.\n  job.phase = 'failed';\n  job.error = { step: 'aligning', message: 'Manus task is waiting on a question or confirmation this pipeline does not handle - check the task in the Manus web app and respond there, or extend this workflow with task.sendMessage/task.confirmAction.' };\n}\n\njob.updatedAt = new Date().toISOString();\nreturn [{ json: { job } }];" } },
+
+    { "id": "alignment-succeeded", "name": "Alignment Succeeded?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [5840, 500],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{$json.job.phase}}", "rightValue": "failed", "operator": { "type": "string", "operation": "notEquals" } } ], "combinator": "and" } } },
 
     { "id": "prepare-cp3", "name": "Prepare CP3", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [5720, 340],
       "parameters": { "mode": "runOnceForAllItems", "jsCode": "const job = $('Parse Alignment Result').item.json.job;\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(JSON.stringify(job, null, 2)), 'job.json', 'application/json');\nreturn [{ json: { job, jobJsonPath: `data/jobs/${job.jobId}/job.json` }, binary: { jobJson: binary } }];" } },
@@ -187,10 +193,12 @@
     "Build Alignment Task Payload": { "main": [[ { "node": "Create Manus Alignment Task", "type": "main", "index": 0 } ]] },
     "Create Manus Alignment Task": { "main": [[ { "node": "Prepare CP2", "type": "main", "index": 0 }, { "node": "Wait Before Poll", "type": "main", "index": 0 } ]] },
     "Prepare CP2": { "main": [[ { "node": "Save CP2", "type": "main", "index": 0 } ]] },
-    "Wait Before Poll": { "main": [[ { "node": "Get Manus Task", "type": "main", "index": 0 } ]] },
-    "Get Manus Task": { "main": [[ { "node": "Is Manus Task Done", "type": "main", "index": 0 } ]] },
+    "Wait Before Poll": { "main": [[ { "node": "List Task Messages", "type": "main", "index": 0 } ]] },
+    "List Task Messages": { "main": [[ { "node": "Check Task Status", "type": "main", "index": 0 } ]] },
+    "Check Task Status": { "main": [[ { "node": "Is Manus Task Done", "type": "main", "index": 0 } ]] },
     "Is Manus Task Done": { "main": [ [ { "node": "Parse Alignment Result", "type": "main", "index": 0 } ], [ { "node": "Wait Before Poll", "type": "main", "index": 0 } ] ] },
-    "Parse Alignment Result": { "main": [[ { "node": "Prepare CP3", "type": "main", "index": 0 }, { "node": "Build Condensation Prompt", "type": "main", "index": 0 } ]] },
+    "Parse Alignment Result": { "main": [[ { "node": "Prepare CP3", "type": "main", "index": 0 }, { "node": "Alignment Succeeded?", "type": "main", "index": 0 } ]] },
+    "Alignment Succeeded?": { "main": [ [ { "node": "Build Condensation Prompt", "type": "main", "index": 0 } ], [] ] },
     "Prepare CP3": { "main": [[ { "node": "Save CP3", "type": "main", "index": 0 } ]] },
     "Build Condensation Prompt": { "main": [[ { "node": "Condense Narration LLM", "type": "main", "index": 0 } ]] },
     "Condense Narration LLM": { "main": [[ { "node": "Parse Narration Result", "type": "main", "index": 0 } ]] },

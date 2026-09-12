@@ -141,13 +141,21 @@ will reject the request with `InvalidArgument` (HTTP 400). Not yet addressed —
 summarizing the transcript before sending it to Manus, or splitting alignment across multiple
 `task.sendMessage` calls per chunk of slides, but that's a real design decision, not a one-line fix.
 
-**Still needed:** how to actually detect task completion. `task.create`'s own docs say to poll via
-**`task.listMessages`**, not a simple "get task" endpoint — and a *separate* `task.detail` endpoint is
-referenced elsewhere in the same doc page too, with no description of what either returns. This means the
-current polling loop (`Get Manus Task` → `Is Manus Task Done`, hitting a guessed `GET /v2/tasks/{id}`
-expecting an `agent_status` field) is very likely built on an endpoint that doesn't exist as documented,
-and needs the `task.listMessages` and `task.detail` doc pages (same OpenAPI-YAML paste format) before it
-can be trusted at all — this is the one piece I'd treat as definitely broken right now, not just unverified.
+**Completion polling confirmed and fixed** against the real `task.listMessages` spec and the Task Lifecycle
+guide. It's `GET /v2/task.listMessages?task_id=...&order=desc&limit=10` (query params, not a path param),
+returning `{ok, task_id, messages: [...], has_more, next_cursor}` — a page of typed events, not a single
+status field. `List Task Messages` → `Check Task Status` → `Is Manus Task Done` now scans for the most
+recent `status_update` event (the first one found, since `order=desc` returns newest-first) and its
+`agent_status`, matching the documented state machine: `running` → keep polling, `stopped` → read the
+`structured_output_result` event's `value.alignment`, `error` → read `error_message`, `waiting` → the agent
+needs a question answered or an action confirmed via `task.sendMessage`/`task.confirmAction`.
+
+**One deliberate gap, not a bug:** this pipeline doesn't implement `task.sendMessage`/`task.confirmAction`.
+A pure structured-output extraction task shouldn't normally hit `waiting`, but if it does, `Parse Alignment
+Result` now surfaces it as `job.phase: "failed"` with a clear message instead of polling forever — worth
+knowing if you ever see a job fail with "waiting on a question or confirmation." Extending this to actually
+answer would mean handling `messageAskUser`/`cascadeAskUser` (reply via `task.sendMessage`) and the action
+confirmation types (via `task.confirmAction`), which is real, separate scope, not a quick add.
 
 ## 6. The UI
 

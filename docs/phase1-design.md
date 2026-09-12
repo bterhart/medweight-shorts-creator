@@ -66,10 +66,13 @@ Per-page `pdftotext` output is extracted too (`slides/*.txt`) but isn't currentl
 draft; wiring it in as extra context per attachment is a reasonable next step if alignment quality on
 text-heavy slides needs improvement.
 
-The task is async: `Wait Before Poll` → `Get Manus Task` → `Is Manus Task Done` loops until
-`agent_status: "stopped"`, per Manus's documented pattern. Manus also supports webhook callbacks as an
-alternative to polling — worth switching to once this is running for real, since it removes the polling
-loop entirely.
+The task is async: `Wait Before Poll` → `List Task Messages` → `Check Task Status` → `Is Manus Task Done`
+loops until the most recent `status_update` event's `agent_status` isn't `running` — confirmed against
+Manus's real `task.listMessages` spec and Task Lifecycle guide, including reading the
+`structured_output_result` event's `value.alignment` on `stopped` and failing the job cleanly on `error` or
+an unhandled `waiting` (this pipeline doesn't implement `task.sendMessage`/`task.confirmAction`). Manus also
+supports webhook callbacks as an alternative to polling — worth switching to once this is running for real,
+since it removes the polling loop entirely.
 
 ## Primary vs. supplementary PDFs
 
@@ -90,7 +93,7 @@ for real:
 | SRT parsing, PDF→PNG/text extraction | Solid, but host-dependent | Requires `poppler-utils` (`pdftoppm`, `pdftotext`, `pdfinfo`) and `ffmpeg`/`ffprobe` installed on the n8n host, and `NODE_FUNCTION_ALLOW_BUILTIN=crypto` set so Code nodes can `require('crypto')` |
 | Manus file upload | **Confirmed and fixed** | Matches the real `file.upload` OpenAPI spec: two-step (create record → PUT bytes to presigned `upload_url`), `file.id` nested under `file`, `{ok, request_id, ...}` envelope on every response |
 | Manus `task.create` | **Confirmed and fixed** | Real endpoint is `POST /v2/task.create`; files attach as `{"type":"file","file_id":...}` parts inside `message.content` (not a separate `attachments` field, which was wrong); `task_id` is flat in the response; structured-output schema now lists every property in `required` with `additionalProperties:false` at every level, per Manus's stricter subset |
-| Manus task completion polling | **Known broken** | `task.create`'s own docs say to poll via `task.listMessages` (a message-list endpoint, not a status field), and mention a separate `task.detail` too — the current `Get Manus Task`/`Is Manus Task Done` nodes hit a guessed `GET /v2/tasks/{id}` expecting `agent_status`, which almost certainly isn't real. Needs the `task.listMessages` and `task.detail` doc pages before this loop can work at all |
+| Manus task completion polling | **Confirmed and fixed** | Matches the real `task.listMessages` spec and Task Lifecycle guide: `GET /v2/task.listMessages?task_id=...&order=desc&limit=10`, scan for the newest `status_update` event's `agent_status`, read `structured_output_result.value` on `stopped`. `waiting` (a question/confirmation this pipeline can't answer) now fails the job cleanly instead of polling forever — extending it to actually handle `task.sendMessage`/`task.confirmAction` is separate, unimplemented scope |
 | Transcript length vs. Manus's message cap | **Unhandled, real constraint** | `message.content`'s combined text is capped at ~5,000 estimated tokens with no way to raise it by splitting across parts — the alignment prompt sends the entire transcript in one block, so a long source video will hit `InvalidArgument` (HTTP 400). No fix implemented yet (options: truncate/summarize before sending, or chunk alignment across multiple `task.sendMessage` calls) |
 | Anthropic condensation call | Mostly solid | Response parsing assumes `response.content[0].text`, standard for the Messages API, but double check against current API version |
 | ElevenLabs Voice Design / TTS | **Verify** | Endpoint paths and response field names (`voice_id`, binary response handling) should be confirmed against the ElevenLabs API reference you're on |
