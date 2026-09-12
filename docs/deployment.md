@@ -16,7 +16,7 @@ git clone https://github.com/bterhart/medweight-shorts-creator.git chatbot-short
 cPanel → **Setup Python App** → Create Application:
 - Application root: `chatbot-shorts/backend`
 - Application URL: whatever path/subdomain you want this served at (e.g. `chatbot-shorts` → `medweight.ca/chatbot-shorts`)
-- Application startup file: `wsgi.py`
+- Application startup file: `passenger_wsgi.py`
 - Application Entry point: `application`
 
 cPanel provisions a virtualenv and generates its own wrapper script (the same shape as the existing Twilio
@@ -29,9 +29,9 @@ source /home/medweight/virtualenv/chatbot-shorts/backend/3.9/bin/activate
 pip install -r /home/medweight/chatbot-shorts/backend/requirements.txt
 ```
 
-## 3. Edit `wsgi.py` for your actual path
+## 3. Edit `passenger_wsgi.py` for your actual path
 
-`backend/wsgi.py` hardcodes `/home/medweight/chatbot-shorts` — update both `sys.path.insert` lines if
+`backend/passenger_wsgi.py` hardcodes `/home/medweight/chatbot-shorts` — update both `sys.path.insert` lines if
 your clone lives somewhere else, matching the existing Twilio app's wrapper script convention.
 
 ## 4. Create the database
