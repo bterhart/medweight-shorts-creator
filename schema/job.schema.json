@@ -12,8 +12,12 @@
 
     "phase": {
       "type": "string",
-      "description": "Coarse pipeline phase. 'prepare' covers alignment against the full transcript/slide deck plus narration cleaning (filler and personal references removed - no duration budget applied). 'ready_for_review' is the human-reviewable slide+text checkpoint prepare stops at. 'condensing' is explicitly triggered via POST /jobs/<id>/condense once a target duration/voice are chosen there - it shortens the cleaned narration, resolves the voice, and synthesizes audio. 'ready_for_render'/'rendering'/'done' follow from that.",
+      "description": "Coarse pipeline phase. 'prepare' covers alignment against the full transcript/slide deck plus narration cleaning (filler and personal references removed - no duration budget applied, never touched again after this). 'ready_for_review' is both the human-reviewable slide+text checkpoint prepare stops at AND the job's permanent resting state afterward - a job can sit here indefinitely, spawning any number of 'shorts' (see below). 'condensing'/'rendering' mean whichever short is named by activeShortId is currently mid-pipeline; the job always returns to 'ready_for_review' once that short finishes or fails, regardless of the short's own outcome. 'ready_for_render'/'done' are legacy values from before shorts existed (a job itself is never rendered directly anymore) and are only expected on jobs created before this change.",
       "enum": ["prepare", "ready_for_review", "condensing", "ready_for_render", "rendering", "done", "failed"]
+    },
+    "activeShortId": {
+      "type": ["string", "null"],
+      "description": "Set to a shorts[].shortId while that short is mid-pipeline (phase='condensing' or 'rendering' above names which one); null the rest of the time. Only one short per job may be in flight at once - POST /jobs/<id>/shorts and .../shorts/<shortId>/render both reject a new request with this already set."
     },
     "step": {
       "type": "string",
@@ -47,36 +51,12 @@
 
     "params": {
       "type": "object",
-      "description": "Everything the UI submits at job creation. Immutable for phase 1; transition/aspect fields may be edited and re-applied for a cheap re-render without redoing phase 1.",
-      "required": ["targetDurationSeconds", "voice", "transition"],
+      "description": "Everything the UI submits at job creation. Immutable for phase 1. Duration/voice moved to per-short fields (see shorts[]) since condensing is no longer a one-shot job-level step.",
+      "required": ["transition"],
       "properties": {
-        "targetDurationSeconds": {
-          "type": "integer",
-          "enum": [45, 90, 180, 300],
-          "description": "Snap points for 45s / 90s / 3min / 5min. Required at job creation (the UI sends a placeholder default there, unused) and overwritten with the real chosen value by POST /jobs/<id>/condense once the job reaches ready_for_review."
-        },
         "narrationStyle": {
           "type": "string",
-          "description": "Free-text tone/expertise instruction for the condensation prompt, e.g. 'explain like a park ranger, plain language' or 'academic hydrology lecture'. Distinct from voice."
-        },
-        "voice": {
-          "type": "object",
-          "required": ["mode"],
-          "properties": {
-            "mode": { "type": "string", "enum": ["preset", "custom"] },
-            "presetVoiceId": {
-              "type": ["string", "null"],
-              "description": "ElevenLabs voice_id from the curated dropdown. Required when mode=preset."
-            },
-            "customDescription": {
-              "type": ["string", "null"],
-              "description": "Freeform voice description for ElevenLabs Voice Design, e.g. '50s male, Scottish accent, warm documentary narrator'. Required when mode=custom."
-            },
-            "resolvedVoiceId": {
-              "type": ["string", "null"],
-              "description": "Filled in during 'resolving_voice'. For mode=custom this is cached in data/voice-cache.json keyed by a hash of customDescription so repeat runs with the same description don't regenerate a voice."
-            }
-          }
+          "description": "Free-text tone/expertise instruction for clean_narration's style-neutral cleaning pass only, e.g. 'explain like a park ranger, plain language' or 'academic hydrology lecture'. Not used by shorts - those always use the hardcoded CBT/MI/ACT/DBT prompt (see pipeline.SHORT_NARRATION_PROMPT_NAME)."
         },
         "transition": {
           "type": "object",
@@ -165,7 +145,7 @@
 
     "narration": {
       "type": "array",
-      "description": "Populated during 'cleaning_narration' from job.alignment's raw excerpts (kept untouched alongside this, so cleaning is never irreversible) - at that point, full-length, cleaned of filler/personal references, not yet sized to a duration. Overwritten in place during 'condensing_narration' (POST /jobs/<id>/condense) with the duration-shortened version once a target length and voice are chosen at review time.",
+      "description": "Populated once, during 'cleaning_narration', from job.alignment's raw excerpts (kept untouched alongside this, so cleaning is never irreversible) - full-length, cleaned of filler/personal references, not sized to any duration. Permanent for the life of the job: nothing after this point ever mutates it. This is the 1:1 slide-to-narration pool every short (below) is built from.",
       "items": {
         "type": "object",
         "required": ["sequenceIndex", "slideId", "script"],
@@ -177,39 +157,88 @@
       }
     },
 
-    "audio": {
+    "shorts": {
       "type": "array",
-      "description": "One synthesized clip per narration segment, in the same order. Populated during 'synthesizing_audio' (part of the 'condensing' phase, POST /jobs/<id>/condense). Reaching phase=ready_for_render requires this array to be fully populated with real durations.",
+      "description": "Independently created, duration-targeted condensed narratives built from job.narration. Each is created via POST /jobs/<id>/shorts and reflects a single coherent script (not a per-slide shrink of the 1:1 narration) grounded in a subset of the original slides, then voiced and rendered on its own via POST /jobs/<id>/shorts/<shortId>/render - a job can hold any number of these (e.g. a 90s teaser and a 5-minute full summary from the same prepared job).",
       "items": {
         "type": "object",
-        "required": ["sequenceIndex", "path", "durationSeconds"],
+        "required": ["shortId", "createdAt", "topic", "targetDurationSeconds", "voice", "phase", "step"],
         "properties": {
-          "sequenceIndex": { "type": "integer" },
-          "path": { "type": "string" },
-          "durationSeconds": { "type": "number" }
-        }
-      }
-    },
-
-    "render": {
-      "type": "object",
-      "description": "Populated by the (separate, repeatable) Phase 2 render workflow. Not touched by Phase 1.",
-      "properties": {
-        "renderedAt": { "type": ["string", "null"], "format": "date-time" },
-        "outputPath": { "type": ["string", "null"], "description": "Path of the most recent render." },
-        "outputUrl": { "type": ["string", "null"] },
-        "renderCount": { "type": "integer", "default": 0, "description": "Incremented each time phase 2 re-renders with different transition params, so old outputs can be kept or pruned." },
-        "history": {
-          "type": "array",
-          "description": "One entry per render, oldest first. Each re-render (e.g. trying a different transition) appends here rather than overwriting; params.transition itself is never mutated by phase 2.",
-          "items": {
+          "shortId": { "type": "string", "format": "uuid" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "topic": {
+            "type": "string",
+            "description": "Required. What this short is about, e.g. 'full presentation overview' or 'the wastewater treatment section' - the only way to tell shorts on the same job apart, so it's mandatory rather than optional."
+          },
+          "targetDurationSeconds": { "type": "integer", "enum": [45, 90, 180, 300] },
+          "voice": {
             "type": "object",
+            "required": ["mode"],
             "properties": {
-              "renderCount": { "type": "integer" },
-              "renderedAt": { "type": "string", "format": "date-time" },
-              "outputPath": { "type": "string" },
-              "transition": { "type": "object", "description": "The transition params actually used for this render, including any CLI overrides." },
-              "resolution": { "type": "string" }
+              "mode": { "type": "string", "enum": ["preset", "custom"] },
+              "presetVoiceId": { "type": ["string", "null"], "description": "ElevenLabs voice_id from the curated dropdown. Required when mode=preset." },
+              "customDescription": { "type": ["string", "null"], "description": "Freeform voice description for ElevenLabs Voice Design. Required when mode=custom." },
+              "resolvedVoiceId": { "type": ["string", "null"], "description": "Filled in during 'resolving_voice'. Cached in data/voice-cache.json for mode=custom." }
+            }
+          },
+          "phase": {
+            "type": "string",
+            "enum": ["condensing", "ready_for_render", "rendering", "done", "failed"],
+            "description": "This short's own state machine, independent of every other short on the job and of job.phase itself."
+          },
+          "step": { "type": "string" },
+          "error": {
+            "type": ["object", "null"],
+            "properties": { "step": { "type": "string" }, "message": { "type": "string" }, "detail": { "type": "string" } }
+          },
+          "script": {
+            "type": "array",
+            "description": "Populated by pipeline.build_short() from the full job.narration pool - one coherent narrative Claude wrote to the target word budget, broken into segments each grounded in an original slideId (a subset of job.narration's slides; several may be merged under one, most may be dropped). Every slideId here is guaranteed to exist in job.narration.",
+            "items": {
+              "type": "object",
+              "required": ["sequenceIndex", "slideId", "script"],
+              "properties": {
+                "sequenceIndex": { "type": "integer" },
+                "slideId": { "type": "string" },
+                "script": { "type": "string" },
+                "estimatedWords": { "type": "integer" },
+                "estimatedSeconds": { "type": "number" }
+              }
+            }
+          },
+          "audio": {
+            "type": "array",
+            "description": "One synthesized clip per short.script segment, in the same order. Populated during 'synthesizing_audio'.",
+            "items": {
+              "type": "object",
+              "required": ["sequenceIndex", "path", "durationSeconds"],
+              "properties": {
+                "sequenceIndex": { "type": "integer" },
+                "path": { "type": "string" },
+                "durationSeconds": { "type": "number" }
+              }
+            }
+          },
+          "render": {
+            "type": "object",
+            "description": "This short's own render state - independent of every other short's.",
+            "properties": {
+              "renderedAt": { "type": ["string", "null"], "format": "date-time" },
+              "outputUrl": { "type": ["string", "null"] },
+              "renderCount": { "type": "integer", "default": 0 },
+              "history": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "renderCount": { "type": "integer" },
+                    "renderedAt": { "type": "string", "format": "date-time" },
+                    "outputUrl": { "type": "string" },
+                    "transition": { "type": "object" },
+                    "resolution": { "type": "string" }
+                  }
+                }
+              }
             }
           }
         }

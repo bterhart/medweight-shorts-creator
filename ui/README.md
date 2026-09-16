@@ -1,13 +1,14 @@
 # UI
 
-Plain HTML/CSS/JS, no build step. Talks to four endpoints served by `backend/app.py` (a Flask app —
-originally these were n8n webhooks, see `archive/README.md` for why that changed; the endpoint contract
-below is unchanged, which is why `ui/` itself needed zero edits when the backend was rewritten):
+Plain HTML/CSS/JS, no build step. Talks to `backend/app.py` (a Flask app — originally these were n8n
+webhooks, see `archive/README.md` for why that changed):
 
 - `POST {apiBase}/jobs` — job intake
 - `GET {apiBase}/jobs/:jobId/status` — polled every 3s
-- `POST {apiBase}/jobs/:jobId/render` — render trigger
-- `GET {apiBase}/files?path=...` — slide images, narration audio, and the final video
+- `POST {apiBase}/jobs/:jobId/shorts` — create a short (condenses the job's permanent narration to a
+  target duration/topic, resolves voice, synthesizes audio)
+- `POST {apiBase}/jobs/:jobId/shorts/:shortId/render` — render trigger, scoped to one short
+- `GET {apiBase}/files?path=...` — slide images and narration audio
 
 ## Running it
 
@@ -21,18 +22,23 @@ Serve `ui/` as static files any way you like (it's just three files) and open `i
    and `pdf_0`/`pdf_1`/… binary fields.
 2. **Progress** — polls status until `phase` is `ready_for_review` or `failed`. Alignment runs against the
    *full* transcript and *full* slide deck (no target duration), then each slide's excerpt is cleaned
-   (filler and personal references removed, nothing shortened).
-3. **Review** — one card per slide: slide image, cleaned narration text, a collapsed "show original excerpt"
-   comparison. A **Finalize narration** panel here is where you pick target duration and voice and trigger
-   `POST /jobs/:id/condense` (shortens the narration, resolves the voice, synthesizes audio) - once that
-   reaches `ready_for_render`, the panel below it (transition, output shape/quality, **Render video**)
-   appears. Re-running just the render (different transition/resolution) doesn't redo alignment or voice.
-4. **Result** — inline video preview + download link. "Back to review" returns to step 3 for another
-   transition attempt without re-doing narration or voice.
+   (filler and personal references removed, nothing shortened). This narration is permanent - nothing later
+   ever rewrites it in place.
+3. **Review & shorts** — the top of this screen is a fixed, read-only card per slide (image, cleaned
+   narration, a collapsed "show original excerpt" comparison) - the full 1:1 alignment, unchanged for the
+   life of the job. Below it, a **Shorts** panel lets you create any number of independent shorts from that
+   narration: give each one a required **topic** (what it's about - the only way to tell shorts on the same
+   job apart), a target duration, and a voice, then **Create short**. This calls `POST /jobs/:id/shorts`,
+   which writes one coherent condensed script from the full narration (not a per-slide shrink) and grounds
+   it back onto whichever original slides it actually covers - often a subset, sometimes just a few slides
+   out of a large deck. Once a short reaches `ready_for_render`, its card gets its own transition/output
+   controls and **Render video** button; the rendered video and download link appear inline on that short's
+   card once done. Only one short per job can be mid-pipeline (condensing or rendering) at a time - creating
+   or rendering another while one is in flight gets a 409 until it finishes.
 
 ## Verified in a real browser, not just read against the code
 
-Before the backend rewrite, a throwaway mock backend (implementing this same four-endpoint contract, and
+Before the backend rewrite, a throwaway mock backend (implementing this same endpoint contract, and
 actually shelling out to the real `render/render.py` rather than faking the render step) was driven through
 Playwright end to end: file upload → submit → poll → review with real slide images and audio players →
 render → result with a working video. Two real bugs were caught and fixed this way, not by review — a
@@ -43,9 +49,9 @@ contract mismatch. Both fixes are in the current `app.js`.
 
 **1080p rendering is slow — ~100 seconds for a trivial 3-segment, 7.5s test clip via MoviePy.** A full
 3-5 minute video with many more segments could take several minutes. `backend/worker.py` never runs a
-render inline with the HTTP request that triggers it — `POST /jobs/:id/render` just flips the job to
-`rendering` and returns immediately; a cron-invoked worker picks it up separately, so there's no HTTP
-timeout to hit no matter how slow a render gets (see `docs/backend-design.md`). Resolution is chosen at
+render inline with the HTTP request that triggers it — `POST /jobs/:id/shorts/:shortId/render` just flips
+that short to `rendering` and returns immediately; a cron-invoked worker picks it up separately, so there's
+no HTTP timeout to hit no matter how slow a render gets (see `docs/backend-design.md`). Resolution is chosen at
 render time with a Preview/Standard/Full tier (`ui/app.js`'s `RESOLUTION_MAP`), defaulting to Preview
 (640x360) so the normal iterate-on-transitions loop stays fast — Full/1080p is opt-in for the render you're
 keeping.

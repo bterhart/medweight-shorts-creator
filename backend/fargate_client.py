@@ -24,18 +24,30 @@ def _ecs():
     return boto3.client("ecs", region_name=config.AWS_REGION)
 
 
-def _prefix(job_id: str) -> str:
-    return f"jobs/{job_id}"
+def _prefix(job_id: str, short_id: str) -> str:
+    return f"jobs/{job_id}/shorts/{short_id}"
 
 
-def dispatch_render(job: dict, render_count: int) -> str:
-    """Uploads job.json + slide/audio files to S3, launches the Fargate
-    render task, and returns its task ARN."""
-    job_id = job["jobId"]
-    prefix = _prefix(job_id)
+def dispatch_render(job: dict, short: dict, render_count: int) -> str:
+    """Uploads a render view of this short (job.json shaped exactly like the
+    old job-level render input - slides/narration/audio/params/pendingOverrides
+    - so render/render.py and render/ecs_task.py need no changes at all) plus
+    its slide/audio files to S3, launches the Fargate render task, and
+    returns its task ARN. Each short renders under its own S3 prefix so
+    multiple shorts on the same job never collide."""
+    job_id, short_id = job["jobId"], short["shortId"]
+    prefix = _prefix(job_id, short_id)
     s3 = _s3()
 
-    s3.put_object(Bucket=config.RENDER_S3_BUCKET, Key=f"{prefix}/job.json", Body=json.dumps(job))
+    render_view = {
+        "jobId": job_id,
+        "slides": job.get("slides", []),
+        "narration": short["script"],
+        "audio": short["audio"],
+        "params": job["params"],
+        "render": {"pendingOverrides": short.get("render", {}).get("pendingOverrides", {})},
+    }
+    s3.put_object(Bucket=config.RENDER_S3_BUCKET, Key=f"{prefix}/job.json", Body=json.dumps(render_view))
 
     for slide in job.get("slides", []):
         for field in ("imagePath", "textPath"):
@@ -43,7 +55,7 @@ def dispatch_render(job: dict, render_count: int) -> str:
             if path and os.path.isfile(path):
                 s3.upload_file(path, config.RENDER_S3_BUCKET, f"{prefix}/slides/{os.path.basename(path)}")
 
-    for a in job.get("audio", []):
+    for a in short.get("audio", []):
         path = a.get("path")
         if path and os.path.isfile(path):
             s3.upload_file(path, config.RENDER_S3_BUCKET, f"{prefix}/audio/{os.path.basename(path)}")
@@ -101,9 +113,9 @@ def check_task(task_arn: str) -> dict:
     return {"state": "failed", "detail": detail}
 
 
-def presigned_output_url(job_id: str, render_count: int, expires_in: int = 3600) -> str:
+def presigned_output_url(job_id: str, short_id: str, render_count: int, expires_in: int = 3600) -> str:
     s3 = _s3()
-    key = f"{_prefix(job_id)}/output/video-{render_count:02d}.mp4"
+    key = f"{_prefix(job_id, short_id)}/output/video-{render_count:02d}.mp4"
     return s3.generate_presigned_url(
         "get_object", Params={"Bucket": config.RENDER_S3_BUCKET, "Key": key}, ExpiresIn=expires_in
     )

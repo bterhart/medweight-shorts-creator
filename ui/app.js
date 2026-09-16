@@ -1,8 +1,9 @@
-// Chatbot Shorts UI — talks to the backend's four endpoints (backend/app.py):
-//   POST {apiBase}/jobs                  create a job
-//   GET  {apiBase}/jobs/:jobId/status    poll job status
-//   POST {apiBase}/jobs/:jobId/render    trigger a render
-//   GET  {apiBase}/files?path=...        slide images/audio/video
+// Chatbot Shorts UI — talks to backend/app.py:
+//   POST {apiBase}/jobs                                  create a job
+//   GET  {apiBase}/jobs/:jobId/status                    poll job status
+//   POST {apiBase}/jobs/:jobId/shorts                    create a short from the job's permanent narration
+//   POST {apiBase}/jobs/:jobId/shorts/:shortId/render    trigger that short's render
+//   GET  {apiBase}/files?path=...                        slide images/audio
 
 const STEP_ORDER = [
   ["queued", "Queued"],
@@ -27,7 +28,6 @@ const RESOLUTION_MAP = {
 
 const state = {
   pdfs: [], // { file, filename, role: 'primary'|'supplementary' }
-  duration: 90,
   jobId: null,
   pollTimer: null,
   currentJob: null,
@@ -142,9 +142,9 @@ function renderPdfList() {
   });
 }
 
-// ---------- voice preset/custom toggle (Step 3 - finalize narration) ----------
-$("condense-voice-preset").addEventListener("change", () => {
-  $("condense-voice-custom").hidden = $("condense-voice-preset").value !== "custom";
+// ---------- voice preset/custom toggle (Step 3 - create a short) ----------
+$("short-voice-preset").addEventListener("change", () => {
+  $("short-voice-custom").hidden = $("short-voice-preset").value !== "custom";
 });
 
 // ---------- setup validation ----------
@@ -158,14 +158,9 @@ function validateSetup() {
 $("submit-btn").addEventListener("click", async () => {
   showError($("setup-error"), "");
   const params = {
-    // Neither of these has a UI control at intake anymore - duration and
-    // voice are chosen later, in Step 3's "Finalize narration" (see the
-    // condense-btn handler below). The backend still requires both fields
-    // at job creation, so these are harmless placeholders overwritten by
-    // POST /jobs/:id/condense once the job reaches ready_for_review.
-    targetDurationSeconds: state.duration,
+    // Duration and voice have no control here - they're chosen per short,
+    // later, in Step 3 (see create-short-btn below).
     narrationStyle: $("narration-style").value.trim(),
-    voice: { mode: "preset", presetVoiceId: "21m00Tcm4TlvDq8ikWAM", customDescription: null },
     transition: {
       type: $("transition-type").value,
       transitionSeconds: Number($("transition-seconds").value),
@@ -217,7 +212,7 @@ function renderStepList(currentStep) {
 
 // ---------- polling ----------
 function startPolling(context) {
-  state.pollContext = context; // 'prepare' (Phase 1) or 'render' (Phase 2)
+  state.pollContext = context; // 'prepare' (Phase 1) or 'shorts' (any short's condense/render)
   clearInterval(state.pollTimer);
   state.pollTimer = setInterval(pollStatus, 3000);
   pollStatus();
@@ -230,71 +225,48 @@ async function pollStatus() {
     const job = await res.json();
     state.currentJob = job;
 
-    if (job.phase === "failed") {
+    if (state.pollContext === "shorts") {
+      // A short failing sets job.phase back to ready_for_review with that
+      // short marked failed (see worker.fail_short) - job.phase=="failed"
+      // here would mean prepare itself broke, which shouldn't happen this
+      // late, but is handled the same way either way: stop polling, show
+      // whatever the server has.
+      if (job.phase === "condensing" || job.phase === "rendering") {
+        showReview(job); // refresh status badges in place
+        return;
+      }
       clearInterval(state.pollTimer);
-      const message = job.error ? job.error.message : "Job failed.";
-      if (state.pollContext === "render") {
-        $("render-status").hidden = true;
-        $("render-btn").disabled = false;
-        showError($("render-error"), message);
-      } else if (state.pollContext === "condense") {
-        $("condense-status").hidden = true;
-        $("condense-btn").disabled = false;
-        showError($("condense-error"), message);
-      } else {
-        showError($("progress-error"), message);
-      }
-      return;
-    }
-
-    if (state.pollContext === "render") {
-      if (job.phase === "done") {
-        clearInterval(state.pollTimer);
-        $("render-status").hidden = true;
-        $("render-btn").disabled = false;
-        showResult(job);
-      }
-      // still "rendering" - nothing to update, #render-status already shows the in-progress message
-      return;
-    }
-
-    if (state.pollContext === "condense") {
-      if (job.phase === "ready_for_render") {
-        clearInterval(state.pollTimer);
-        $("condense-status").hidden = true;
-        $("condense-btn").disabled = false;
-        showReview(job); // refreshes the segment list with shortened narration + audio, reveals render-group
-      }
-      // still "condensing" - nothing to update, #condense-status already shows the in-progress message
+      showReview(job);
       return;
     }
 
     renderStepList(job.step);
+    if (job.phase === "failed") {
+      clearInterval(state.pollTimer);
+      showError($("progress-error"), job.error ? job.error.message : "Job failed.");
+      return;
+    }
     if (job.phase === "ready_for_review" || job.phase === "done") {
       clearInterval(state.pollTimer);
       $("progress-section").hidden = true;
       showReview(job);
     }
   } catch (err) {
-    const target = state.pollContext === "render" ? $("render-error")
-      : state.pollContext === "condense" ? $("condense-error")
-      : $("progress-error");
-    showError(target, `Lost contact with server: ${err.message}`);
+    showError(state.pollContext === "shorts" ? $("create-short-error") : $("progress-error"),
+      `Lost contact with server: ${err.message}`);
   }
 }
 
-// ---------- review (Phase 1 complete) ----------
+// ---------- review (Phase 1 complete): permanent 1:1 narration ----------
 function showReview(job) {
   $("review-section").hidden = false;
   const slidesById = Object.fromEntries(job.slides.map((s) => [s.slideId, s]));
-  const audioBySeq = Object.fromEntries(job.audio.map((a) => [a.sequenceIndex, a]));
   const alignmentBySeq = Object.fromEntries(job.alignment.map((a) => [a.sequenceIndex, a]));
 
   const list = $("segment-list");
   list.innerHTML = "";
   for (const n of [...job.narration].sort((a, b) => a.sequenceIndex - b.sequenceIndex)) {
     const slide = slidesById[n.slideId];
-    const audio = audioBySeq[n.sequenceIndex];
     const alignment = alignmentBySeq[n.sequenceIndex];
 
     const card = document.createElement("div");
@@ -326,117 +298,201 @@ function showReview(job) {
       body.appendChild(details);
     }
 
+    card.append(img, body);
+    list.appendChild(card);
+  }
+
+  renderShortsList(job, slidesById);
+}
+
+// ---------- shorts: create, list, render ----------
+function renderShortsList(job, slidesById) {
+  const container = $("shorts-list");
+  container.innerHTML = "";
+  const shorts = [...(job.shorts || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  for (const short of shorts) {
+    container.appendChild(buildShortCard(job, short, slidesById));
+  }
+
+  const blocked = Boolean(job.activeShortId);
+  $("create-short-btn").disabled = blocked;
+  $("create-short-status").hidden = !blocked;
+  if (blocked) $("create-short-status").textContent = "A short is currently processing — wait for it to finish before creating another.";
+}
+
+function buildShortCard(job, short, slidesById) {
+  const card = document.createElement("div");
+  card.className = "short-card";
+
+  const header = document.createElement("h4");
+  header.textContent = `${short.topic} — ${short.targetDurationSeconds}s — ${short.phase.replace(/_/g, " ")}`;
+  card.appendChild(header);
+
+  if (short.phase === "failed") {
+    const err = document.createElement("p");
+    err.className = "error-text";
+    err.textContent = short.error ? short.error.message : "This short failed.";
+    card.appendChild(err);
+    return card;
+  }
+
+  if (short.phase === "condensing") {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "Condensing narration and synthesizing voice…";
+    card.appendChild(p);
+    return card;
+  }
+
+  // ready_for_render / rendering / done - the script (and usually audio) exist
+  for (const n of [...short.script].sort((a, b) => a.sequenceIndex - b.sequenceIndex)) {
+    const slide = slidesById[n.slideId];
+    const audio = (short.audio || []).find((a) => a.sequenceIndex === n.sequenceIndex);
+
+    const seg = document.createElement("div");
+    seg.className = "segment-card";
+    const img = document.createElement("img");
+    img.src = fileUrl(slide.imagePath);
+    img.alt = n.slideId;
+    const body = document.createElement("div");
+    body.className = "segment-body";
+    const text = document.createElement("div");
+    text.className = "script-text";
+    text.textContent = n.script;
+    body.appendChild(text);
     if (audio) {
       const audioEl = document.createElement("audio");
       audioEl.controls = true;
       audioEl.src = fileUrl(audio.path);
       body.appendChild(audioEl);
     }
-
-    card.append(img, body);
-    list.appendChild(card);
+    seg.append(img, body);
+    card.appendChild(seg);
   }
 
-  $("render-transition-type").value = job.params.transition.type;
-  $("render-transition-seconds").value = job.params.transition.transitionSeconds;
-  $("render-min-slide-seconds").value = job.params.transition.minSlideSeconds;
-
-  // condense-group (duration/voice/TTS) only makes sense before that stage
-  // has run; render-group (transition/render) only makes sense once audio
-  // exists to render with.
-  $("condense-group").hidden = job.phase !== "ready_for_review";
-  $("render-group").hidden = !(job.phase === "ready_for_render" || job.phase === "done");
-
-  if (job.phase === "done" && job.render && (job.render.outputUrl || job.render.outputPath)) {
-    showResult(job);
+  if (short.phase === "done" && short.render && short.render.outputUrl) {
+    const video = document.createElement("video");
+    video.controls = true;
+    video.src = short.render.outputUrl;
+    const download = document.createElement("a");
+    download.className = "primary-btn";
+    download.href = short.render.outputUrl;
+    download.download = `${short.topic.trim().replace(/\W+/g, "-").toLowerCase()}.mp4`;
+    download.textContent = "Download video";
+    card.append(video, download);
   }
+
+  const controls = document.createElement("div");
+  controls.className = "field-row";
+
+  const transitionType = document.createElement("select");
+  [["cut", "Cut"], ["fade", "Fade to black"], ["crossfade", "Crossfade"], ["wipe", "Wipe"], ["slide", "Slide"]].forEach(([v, label]) => {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = label;
+    if (v === job.params.transition.type) opt.selected = true;
+    transitionType.appendChild(opt);
+  });
+
+  const aspect = document.createElement("select");
+  ["16:9", "9:16", "1:1"].forEach((a) => {
+    const opt = document.createElement("option");
+    opt.value = a;
+    opt.textContent = a;
+    if (a === (job.params.aspectRatio || "16:9")) opt.selected = true;
+    aspect.appendChild(opt);
+  });
+
+  const quality = document.createElement("select");
+  [["preview", "Preview"], ["standard", "Standard"], ["full", "Full (slow)"]].forEach(([v, label]) => {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = label;
+    quality.appendChild(opt);
+  });
+
+  const renderBtn = document.createElement("button");
+  renderBtn.type = "button";
+  renderBtn.className = "primary-btn";
+  renderBtn.textContent = short.phase === "rendering" ? "Rendering…" : "Render video";
+  renderBtn.disabled = short.phase === "rendering" || Boolean(job.activeShortId);
+  renderBtn.addEventListener("click", () =>
+    triggerShortRender(short.shortId, transitionType.value, aspect.value, quality.value, errorEl));
+
+  controls.append(transitionType, aspect, quality, renderBtn);
+  card.appendChild(controls);
+
+  const errorEl = document.createElement("p");
+  errorEl.className = "error-text";
+  errorEl.hidden = true;
+  card.appendChild(errorEl);
+
+  return card;
 }
 
-// ---------- finalize narration (condense + voice + TTS) ----------
-$("condense-btn").addEventListener("click", async () => {
-  showError($("condense-error"), "");
-  $("condense-btn").disabled = true;
-  $("condense-status").hidden = false;
-  $("condense-status").textContent = "Shortening narration and synthesizing voice audio…";
-
-  const voiceMode = $("condense-voice-preset").value === "custom" ? "custom" : "preset";
-  const body = {
-    targetDurationSeconds: Number($("condense-duration").value),
-    voice: {
-      mode: voiceMode,
-      presetVoiceId: voiceMode === "preset" ? $("condense-voice-preset").value : null,
-      customDescription: voiceMode === "custom" ? $("condense-voice-custom").value.trim() : null,
-    },
-  };
-
-  try {
-    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/condense`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error((await res.json()).error || `Server responded ${res.status}`);
-    startPolling("condense");
-  } catch (err) {
-    $("condense-status").hidden = true;
-    $("condense-btn").disabled = false;
-    showError($("condense-error"), `Failed to start: ${err.message}`);
-  }
-});
-
-// ---------- render (Phase 2) ----------
-// The render-trigger webhook acks almost immediately (it backgrounds the
-// actual render and returns phase="rendering") specifically so this never
-// risks an HTTP timeout, no matter how long a Full/1080p render takes -
-// completion is picked up by polling the same status endpoint Phase 1 uses.
-$("render-btn").addEventListener("click", async () => {
-  showError($("render-error"), "");
-  $("render-btn").disabled = true;
-  $("render-status").hidden = false;
-
-  const quality = $("render-quality").value;
-  const aspect = $("render-aspect").value;
+async function triggerShortRender(shortId, transitionType, aspect, quality, errorEl) {
+  showError(errorEl, "");
   const resolution = RESOLUTION_MAP[aspect][quality];
-  $("render-status").textContent = `Rendering at ${resolution} (${quality})… `
-    + (quality === "full" ? "Full/1080p renders can take a minute or more." : "should only take a few seconds.");
-
+  const t = state.currentJob.params.transition;
   const body = {
-    transitionType: $("render-transition-type").value,
-    transitionSeconds: Number($("render-transition-seconds").value),
-    minSlideSeconds: Number($("render-min-slide-seconds").value),
+    transitionType,
+    transitionSeconds: t.transitionSeconds,
+    minSlideSeconds: t.minSlideSeconds,
     resolution,
   };
 
   try {
-    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/render`, {
+    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/shorts/${shortId}/render`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Server responded ${res.status}`);
-    startPolling("render");
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
+    startPolling("shorts");
   } catch (err) {
-    $("render-status").hidden = true;
-    $("render-btn").disabled = false;
-    showError($("render-error"), `Failed to start render: ${err.message}`);
+    showError(errorEl, `Failed to start render: ${err.message}`);
   }
-});
-
-function showResult(job) {
-  $("result-section").hidden = false;
-  // outputUrl (a presigned S3 URL from the Fargate render) is used directly;
-  // outputPath (an old in-process render's local server path) still needs
-  // the /files proxy - kept for any job rendered before this change.
-  const url = job.render.outputUrl || fileUrl(job.render.outputPath);
-  $("result-video").src = url;
-  $("result-download").href = url;
-  $("result-download").download = `chatbot-shorts-${job.jobId}.mp4`;
-  $("result-section").scrollIntoView({ behavior: "smooth" });
 }
 
-$("render-again-btn").addEventListener("click", () => {
-  $("result-section").hidden = true;
-  $("review-section").scrollIntoView({ behavior: "smooth" });
+$("create-short-btn").addEventListener("click", async () => {
+  showError($("create-short-error"), "");
+  const topic = $("short-topic").value.trim();
+  if (!topic) {
+    showError($("create-short-error"), "Topic is required.");
+    return;
+  }
+
+  $("create-short-btn").disabled = true;
+  $("create-short-status").hidden = false;
+  $("create-short-status").textContent = "Creating short — condensing narration and synthesizing voice…";
+
+  const voiceMode = $("short-voice-preset").value === "custom" ? "custom" : "preset";
+  const body = {
+    topic,
+    targetDurationSeconds: Number($("short-duration").value),
+    voice: {
+      mode: voiceMode,
+      presetVoiceId: voiceMode === "preset" ? $("short-voice-preset").value : null,
+      customDescription: voiceMode === "custom" ? $("short-voice-custom").value.trim() : null,
+    },
+  };
+
+  try {
+    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/shorts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
+    $("short-topic").value = "";
+    startPolling("shorts");
+  } catch (err) {
+    $("create-short-status").hidden = true;
+    $("create-short-btn").disabled = false;
+    showError($("create-short-error"), `Failed to create short: ${err.message}`);
+  }
 });
 
 // ---------- back to setup ----------
@@ -453,7 +509,6 @@ $("back-btn").addEventListener("click", () => {
   $("srt-filename").hidden = true;
   renderPdfList();
   $("review-section").hidden = true;
-  $("result-section").hidden = true;
   $("progress-section").hidden = true;
   $("setup-section").hidden = false;
   validateSetup();
@@ -574,7 +629,6 @@ $("job-picker").addEventListener("change", async () => {
   $("setup-section").hidden = true;
   $("progress-section").hidden = true;
   $("review-section").hidden = true;
-  $("result-section").hidden = true;
 
   try {
     const res = await fetch(`${getApiBase()}/jobs/${jobId}/status`);
@@ -586,20 +640,14 @@ $("job-picker").addEventListener("change", async () => {
       $("progress-section").hidden = false;
       renderStepList(job.step);
       showError($("progress-error"), job.error ? job.error.message : "Job failed.");
+    } else if (job.phase === "condensing" || job.phase === "rendering") {
+      // a short is mid-pipeline; job.phase always returns to ready_for_review
+      // once it finishes or fails (see worker.fail_short/run_render)
+      showReview(job);
+      startPolling("shorts");
     } else if (job.phase === "ready_for_review" || job.phase === "ready_for_render" || job.phase === "done") {
+      // the latter two are legacy values from jobs created before shorts existed
       showReview(job);
-    } else if (job.phase === "condensing") {
-      showReview(job);
-      $("condense-btn").disabled = true;
-      $("condense-status").hidden = false;
-      $("condense-status").textContent = "Shortening narration and synthesizing voice audio…";
-      startPolling("condense");
-    } else if (job.phase === "rendering") {
-      showReview(job);
-      $("render-btn").disabled = true;
-      $("render-status").hidden = false;
-      $("render-status").textContent = "Rendering…";
-      startPolling("render");
     } else {
       $("progress-section").hidden = false;
       $("progress-job-id").textContent = jobId;

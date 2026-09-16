@@ -163,6 +163,17 @@ def create_prompt(name: str, text: str) -> dict:
     return {"id": prompt_id, "name": name, "text": text}
 
 
+def get_prompt_by_name(name: str) -> dict | None:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, text FROM narration_prompts WHERE name = %s", (name,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def update_prompt(prompt_id: str, name: str, text: str) -> None:
     conn = get_connection()
     try:

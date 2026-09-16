@@ -105,13 +105,17 @@ Flask app is reachable — e.g. `https://medweight.ca/chatbot-shorts` (no traili
    venv's Python and that `backend/.env` has real DB credentials.
 3. Poll `GET /chatbot-shorts/jobs/<id>/status` (or just watch the UI) until `phase` reaches
    `ready_for_review` or `failed`. A `failed` phase's `error.detail` field has the full Python traceback —
-   that's the first place to look.
-4. From `ready_for_review`, trigger `POST /chatbot-shorts/jobs/<id>/condense` (UI: the "Finalize narration"
-   panel in Step 3) with a target duration and voice - this shortens the narration, resolves the voice, and
-   synthesizes audio via the next cron tick(s), same claim/process pattern as step 2.
-5. Once `ready_for_render`, trigger a render (UI button, or `POST /chatbot-shorts/jobs/<id>/render`) and
-   watch the next cron tick pick it up the same way. `POST /jobs/<id>/render` rejects any job not yet at
-   `ready_for_render`.
+   that's the first place to look. `job.narration` at this point is permanent - nothing later ever rewrites
+   it in place.
+4. From `ready_for_review`, create a short via `POST /chatbot-shorts/jobs/<id>/shorts` (UI: the "Shorts"
+   panel in Step 3) with a required `topic`, target duration, and voice - this writes one coherent condensed
+   script from the full narration (not a per-slide shrink), grounds it onto whichever original slides it
+   actually covers, resolves the voice, and synthesizes audio via the next cron tick(s), same claim/process
+   pattern as step 2. A job can hold any number of shorts; only one may be mid-pipeline at a time.
+5. Once that short reaches `ready_for_render`, trigger its render (UI button on the short's card, or
+   `POST /chatbot-shorts/jobs/<id>/shorts/<shortId>/render`) and watch the next cron tick pick it up the
+   same way. That endpoint rejects a short not yet at `ready_for_render`, and rejects any request while
+   another short on the same job is still mid-pipeline.
 
 ## Before this is anything but a test
 

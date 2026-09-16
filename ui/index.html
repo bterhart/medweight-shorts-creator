@@ -102,20 +102,23 @@
     <!-- ===================== REVIEW ===================== -->
     <section id="review-section" class="panel" hidden>
       <h2>3. Review script &amp; slides</h2>
-      <p class="hint">Nothing is rendered yet — this is the free part. Re-run just the render below as many times as you like.</p>
+      <p class="hint">This is the full 1:1 slide-to-narration alignment — permanent for this job, never shortened or rewritten in place. Create as many shorts as you like from it below.</p>
       <button id="back-btn" class="secondary-btn" type="button">&larr; Back to setup</button>
       <p class="hint">Going back starts a new submission — this won't resume or reuse the job you just prepared.</p>
       <div id="segment-list" class="segment-list"></div>
 
-      <!-- Shown while phase=ready_for_review: the narration above is full-length
-           and cleaned, but not yet shortened to a duration, voiced, or synthesized. -->
-      <div id="condense-group" hidden>
-        <h3>Finalize narration</h3>
-        <p class="hint">Shorten the narration above to a target length and synthesize voice audio. This can only be done once per job (it replaces the full narration shown above with the shortened version).</p>
+      <div id="shorts-section">
+        <h3>Shorts</h3>
+        <p class="hint">Each short is a fresh, coherent narration written from the full narration above — condensed to a target length and grounded back onto the slides it actually covers (not all of them). Give each one a topic so you can tell them apart, e.g. a "full presentation overview" and a "90s teaser" side by side.</p>
 
         <div class="field-group">
-          <label>Target narration length</label>
-          <select id="condense-duration">
+          <label for="short-topic">Topic (required)</label>
+          <input id="short-topic" type="text" placeholder="e.g. full presentation overview, or the wastewater treatment section" />
+        </div>
+
+        <div class="field-group">
+          <label>Target length</label>
+          <select id="short-duration">
             <option value="45">45s</option>
             <option value="90" selected>90s</option>
             <option value="180">3 min</option>
@@ -125,7 +128,7 @@
 
         <div class="field-group">
           <label>Voice</label>
-          <select id="condense-voice-preset">
+          <select id="short-voice-preset">
             <option value="21m00Tcm4TlvDq8ikWAM">Rachel — US female, warm</option>
             <option value="pNInz6obpgDQGcFmaJgB">Adam — US male, deep</option>
             <option value="EXAVITQu4vr4xnSDxMaL">Bella — US female, soft</option>
@@ -133,65 +136,14 @@
             <option value="custom">Custom voice description…</option>
           </select>
           <p class="hint">Preset IDs are ElevenLabs' commonly-used default library voices — verify they're available on your account, or replace with your own.</p>
-          <textarea id="condense-voice-custom" placeholder="e.g. 50s male, Scottish accent, warm documentary narrator" hidden></textarea>
+          <textarea id="short-voice-custom" placeholder="e.g. 50s male, Scottish accent, warm documentary narrator" hidden></textarea>
         </div>
 
-        <button id="condense-btn" class="primary-btn" type="button">Prepare narration &amp; voice</button>
-        <p id="condense-status" class="hint" hidden></p>
-        <p id="condense-error" class="error-text" hidden></p>
-      </div>
+        <button id="create-short-btn" class="primary-btn" type="button">Create short</button>
+        <p id="create-short-status" class="hint" hidden></p>
+        <p id="create-short-error" class="error-text" hidden></p>
 
-      <!-- Shown once phase=ready_for_render (or done): audio exists, rendering is meaningful. -->
-      <div id="render-group" hidden>
-        <div class="field-group">
-          <label>Transition (change freely — re-rendering doesn't redo alignment/voice)</label>
-          <div class="field-row">
-            <select id="render-transition-type">
-              <option value="cut">Cut</option>
-              <option value="fade">Fade to black</option>
-              <option value="crossfade">Crossfade</option>
-              <option value="wipe">Wipe</option>
-              <option value="slide">Slide</option>
-            </select>
-            <label class="inline-number">Transition seconds
-              <input id="render-transition-seconds" type="number" step="0.05" min="0.1" max="3" />
-            </label>
-            <label class="inline-number">Min. seconds per slide
-              <input id="render-min-slide-seconds" type="number" step="0.5" min="1" />
-            </label>
-          </div>
-        </div>
-
-        <div class="field-group">
-          <label>Output shape &amp; quality</label>
-          <div class="field-row">
-            <select id="render-aspect">
-              <option value="16:9" selected>16:9 (landscape)</option>
-              <option value="9:16">9:16 (vertical)</option>
-              <option value="1:1">1:1 (square)</option>
-            </select>
-            <select id="render-quality">
-              <option value="preview" selected>Preview — fast, low-res (renders in seconds)</option>
-              <option value="standard">Standard — 720p-ish</option>
-              <option value="full">Full — 1080p (slow: ~1-2 min per short clip in testing)</option>
-            </select>
-          </div>
-          <p class="hint">Defaults to Preview so you can iterate on transitions quickly. Switch to Full only for the render you actually want to keep.</p>
-        </div>
-
-        <button id="render-btn" class="primary-btn" type="button">Render video</button>
-        <p id="render-status" class="hint" hidden></p>
-        <p id="render-error" class="error-text" hidden></p>
-      </div>
-    </section>
-
-    <!-- ===================== RESULT ===================== -->
-    <section id="result-section" class="panel" hidden>
-      <h2>4. Result</h2>
-      <video id="result-video" controls></video>
-      <div class="field-row">
-        <a id="result-download" class="primary-btn" download>Download video</a>
-        <button id="render-again-btn" class="link-btn" type="button">Back to review — try another transition</button>
+        <div id="shorts-list"></div>
       </div>
     </section>
   </main>

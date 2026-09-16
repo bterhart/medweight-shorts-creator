@@ -1,8 +1,7 @@
 # Backend design
 
 Replaces the earlier n8n-based approach (see `archive/`) with plain, testable Python: a small Flask app
-for the four HTTP endpoints `ui/` already talks to, and a cron-invoked worker script that does the actual
-pipeline work. `ui/` needed zero changes — same endpoints, same JSON shapes.
+for the HTTP endpoints `ui/` talks to, and a cron-invoked worker script that does the actual pipeline work.
 
 ## Why this shape
 
@@ -35,11 +34,13 @@ The actual pipeline runs in `backend/worker.py`, meant to be invoked by cron eve
 
 Each invocation: acquire an exclusive file lock (so overlapping cron ticks can't run two workers at once —
 simpler and safer on shared hosting than trying to bound per-job concurrency), atomically claim one job
-that still needs work (`phase IN ('prepare', 'rendering')`, skipping anything another worker already holds
-a lease on), process it fully — which can take minutes, that's fine, cron doesn't need it to finish before
-the next tick, the lock just makes the next tick a no-op until this one's done — then exit. `POST
-/jobs/<id>/render` doesn't run rendering itself either; it just flips `phase` to `rendering` with the
-requested overrides stored on the job, and the same worker loop picks it up next.
+that still needs work (`phase IN ('prepare', 'condensing', 'rendering')`, skipping anything another worker
+already holds a lease on), process it fully — which can take minutes, that's fine, cron doesn't need it to
+finish before the next tick, the lock just makes the next tick a no-op until this one's done — then exit.
+Neither `POST /jobs/<id>/shorts` nor `POST /jobs/<id>/shorts/<shortId>/render` does the actual work inline;
+each just writes the request onto the named short (in `job.shorts`, with `job.activeShortId` pointing at
+it) and flips `job.phase` to `condensing`/`rendering`, and the same worker loop picks it up next. Only one
+short per job may be mid-pipeline at a time - `job.activeShortId` enforces that at the API layer.
 
 ## Pipeline steps (`backend/pipeline.py`)
 
@@ -55,8 +56,15 @@ to the DB after each one so status polls see live progress:
    `file`-type parts mixed into `message.content` (not a separate `attachments` field), and polling via
    `task.listMessages` scanning for the newest `status_update` event's `agent_status`. All of this was
    verified against Manus's own OpenAPI specs during development, not third-party summaries.
-4. `condense_narration` — one Anthropic Messages API call, same word-budget-per-segment logic as before.
-5. `resolve_voice` / `synthesize_audio` — ElevenLabs preset or Voice Design (cached by description hash in
+4. `clean_narration` — one Anthropic Messages API call producing `job.narration`: the full 1:1
+   slide-to-narration alignment, cleaned of filler/personal references, sized to nothing. Permanent once
+   written - nothing later ever mutates it in place.
+5. `build_short` — a separate, explicitly-triggered step (`POST /jobs/<id>/shorts`, not part of the
+   automatic prepare flow): one Anthropic Messages API call that writes a single coherent, duration-targeted
+   narrative from the full `job.narration` pool (not a per-slide shrink) and grounds it back onto whichever
+   original slides it actually covers - always via the hardcoded "Second pass (CBT/MI/ACT/DBT narration)"
+   prompt, looked up from `narration_prompts` by name. A job can hold any number of these.
+6. `resolve_voice` / `synthesize_audio` — ElevenLabs preset or Voice Design (cached by description hash in
    `DATA_DIR/voice-cache.json`, same as before) and per-segment TTS, with duration read via
    `moviepy.AudioFileClip` instead of shelling out to `ffprobe` separately — one less external dependency,
    since `moviepy` (needed for rendering anyway) already resolves its own `ffmpeg` via the pip-installable

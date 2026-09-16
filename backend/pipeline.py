@@ -12,6 +12,7 @@ import pymupdf
 import requests
 
 import config
+import db
 import manus_client
 
 WORDS_PER_MINUTE = 130
@@ -19,13 +20,12 @@ WORDS_PER_MINUTE = 130
 # no way around it by splitting - a real constraint hit during development,
 # not a guess. ~4 chars/token is a conservative estimate that leaves margin.
 MAX_TRANSCRIPT_CHARS = 16000
-# Confirmed live: dividing a short target duration's word budget evenly
-# across many segments (e.g. 90s / 65 segments = ~3 words/segment) gave
-# Claude an effectively unsolvable per-segment task and it never produced
-# output before hitting max_tokens. Below this floor, a segment isn't a
-# real sentence - it's dropped from the narration entirely instead (see
-# select_segments_for_budget), rather than force-condensed into a fragment.
-MIN_WORDS_PER_SEGMENT = 12
+# build_short() always uses this prompt for style, regardless of any
+# per-job narrationStyle text (that's clean_narration's field, not this
+# stage's) - the full CBT/MI/ACT/DBT framing belongs here, not in the
+# style-neutral cleaning pass. Referenced by name (not pasted as a literal
+# string) so editing it in the prompt library takes effect immediately.
+SHORT_NARRATION_PROMPT_NAME = "Second pass (CBT/MI/ACT/DBT narration)"
 
 
 def parse_srt(srt_path: str) -> dict:
@@ -220,11 +220,12 @@ def run_alignment(job: dict) -> None:
 
 def clean_narration(job: dict) -> None:
     """Turns each slide's full aligned transcript excerpt into cleaned
-    narration text - no duration budget applied here (see condense_narration
-    for that, no longer called automatically; see worker.py). Cleaning
-    removes filler and personal references only; it must not shape content
-    for any narration-style modality (CBT/MI/ACT/etc) - that's a distinct,
-    not-yet-built later step. job["alignment"] is left untouched as the
+    narration text - no duration budget applied here (see build_short, which
+    reads this output). This pass produces job["narration"] once and it's
+    permanent from here on - cleaning removes filler and personal references
+    only; it must not shape content for any narration-style modality
+    (CBT/MI/ACT/etc) - build_short does that, with its own hardcoded prompt.
+    job["alignment"] is left untouched as the
     original/raw excerpts, so nothing this step does is irreversible."""
     alignment = job["alignment"]
     style = job["params"].get("narrationStyle") or "clear, neutral documentary narration"
@@ -283,58 +284,47 @@ def clean_narration(job: dict) -> None:
     ]
 
 
-def select_segments_for_budget(cleaned: list, total_word_budget: int, min_words: int = MIN_WORDS_PER_SEGMENT) -> list:
-    """Picks which cleaned segments can get a real (>= min_words) word
-    budget out of total_word_budget, rather than spreading it thin across
-    every segment regardless of count. When everything fits, returns all of
-    them unchanged. Otherwise samples evenly across the full sequence (not
-    just the longest excerpts) so the result still covers the presentation's
-    narrative arc start to end, rather than clustering on one section."""
-    max_segments = max(1, total_word_budget // min_words)
-    if len(cleaned) <= max_segments:
-        return cleaned
-    step = len(cleaned) / max_segments
-    indices = sorted({min(len(cleaned) - 1, round(i * step)) for i in range(max_segments)})
-    return [cleaned[i] for i in indices]
+def build_short(job: dict, short: dict) -> None:
+    """Writes one coherent, duration-targeted narrative script from the
+    permanent job["narration"] pool (never mutated here - unlike the old
+    condense_narration, this never touches the 1:1 alignment) and grounds
+    each part of it in an original slideId. No segment gets an independent
+    word quota: Claude writes flowing prose covering short["topic"] and
+    decides for itself which of the original slides the result belongs
+    next to, including dropping most of them - that's the intended
+    behavior for a short focused on one topic within a longer deck, or
+    condensed to a duration too short to touch every slide.
 
+    Always uses the hardcoded SHORT_NARRATION_PROMPT_NAME prompt (full
+    CBT/MI/ACT/DBT framing) for style. job["params"]["narrationStyle"] is
+    clean_narration's field, not this one."""
+    style_prompt_row = db.get_prompt_by_name(SHORT_NARRATION_PROMPT_NAME)
+    if style_prompt_row is None:
+        raise RuntimeError(f"build_short: no narration_prompts row named {SHORT_NARRATION_PROMPT_NAME!r}")
+    style_prompt = style_prompt_row["text"]
 
-def condense_narration(job: dict) -> None:
-    """Shortens the already-cleaned narration (job["narration"], produced by
-    clean_narration - filler and personal references already removed) to
-    fit a target duration. Deliberately reads job["narration"] here, not
-    job["alignment"]'s raw excerpts - sourcing from the raw text would
-    silently undo the cleaning pass."""
-    cleaned = job["narration"]
-    target_seconds = job["params"]["targetDurationSeconds"]
+    full_narration = [
+        {"sequence_index": n["sequenceIndex"], "slide_id": n["slideId"], "script": n["script"]}
+        for n in job["narration"]
+    ]
+    known_ids = {n["slideId"] for n in job["narration"]}
+    target_seconds = short["targetDurationSeconds"]
     total_word_budget = round(target_seconds / 60 * WORDS_PER_MINUTE)
 
-    selected = select_segments_for_budget(cleaned, total_word_budget)
-    total_chars = sum(len(n["script"]) for n in selected) or 1
-
-    segments = [
-        {
-            "sequence_index": n["sequenceIndex"],
-            "slide_id": n["slideId"],
-            "excerpt": n["script"],
-            "word_budget": max(MIN_WORDS_PER_SEGMENT, round((len(n["script"]) / total_chars) * total_word_budget)),
-        }
-        for n in selected
-    ]
-    style = job["params"].get("narrationStyle") or "clear, neutral documentary narration"
-    skip_note = (
-        f" {len(cleaned) - len(selected)} slides from the source deck aren't included below - the target "
-        "duration doesn't allow narrating all of them, so a subset spanning the full presentation was "
-        "already chosen; don't try to account for content that isn't in the segments below.\n"
-        if len(selected) < len(cleaned) else ""
-    )
     prompt = (
-        f'Condense each transcript excerpt below into narration matching this style: "{style}".\n'
-        f"Total narration across all segments must sum to about {total_word_budget} words "
-        f"(~{target_seconds}s spoken at {WORDS_PER_MINUTE}wpm).\n"
-        "Each segment lists its own word budget; stay close to it while keeping sentences natural and "
-        f"self-contained (each plays over one static image).\n{skip_note}"
-        'Respond with ONLY JSON of the shape {"narration":[{"sequence_index":0,"slide_id":"...","script":"..."}]}.\n\n'
-        f"Segments:\n{json.dumps(segments, indent=2)}"
+        f"{style_prompt}\n\n"
+        f'Write ONE coherent, flowing narration script on this topic: "{short["topic"]}".\n'
+        f"Target length: about {total_word_budget} words total (~{target_seconds}s spoken at "
+        f"{WORDS_PER_MINUTE}wpm) - a hard constraint on the final video's runtime, not a suggestion.\n\n"
+        "The full presentation's slide-by-slide narration is below, in order, each tagged with its "
+        "slide_id. Use it as your only source material. Break your output into ordered segments, each "
+        "tagged with the slide_id (from the list below) it plays over - merge several source segments "
+        "under one slide_id where useful, skip slides that aren't relevant to the topic or don't fit the "
+        "duration, and default to the original order unless the topic genuinely requires reordering. "
+        "Never invent a slide_id that isn't in the source list below.\n\n"
+        'Respond with ONLY JSON of the shape {"narration":[{"sequence_index":0,"slide_id":"...","script":"..."}]}, '
+        "sequence_index being your own output order (0, 1, 2, ...), not the source's.\n\n"
+        f"Source narration:\n{json.dumps(full_narration, indent=2)}"
     )
 
     resp = requests.post(
@@ -344,10 +334,6 @@ def condense_narration(job: dict) -> None:
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         },
-        # 4096 proved too tight for a real ~65-segment job (confirmed live:
-        # StopIteration from no text block at all in the response, most
-        # likely extended thinking consuming the whole budget before any
-        # output text) - raised to match clean_narration's allowance.
         json={"model": "claude-sonnet-5", "max_tokens": 16000, "messages": [{"role": "user", "content": prompt}]},
         timeout=180,
     )
@@ -357,7 +343,7 @@ def condense_narration(job: dict) -> None:
     text_block = next((block for block in content if block.get("type") == "text"), None)
     if text_block is None:
         raise RuntimeError(
-            f"condense_narration: Claude response had no text block (stop_reason={data.get('stop_reason')})"
+            f"build_short: Claude response had no text block (stop_reason={data.get('stop_reason')})"
         )
     text = text_block["text"]
     try:
@@ -366,22 +352,25 @@ def condense_narration(job: dict) -> None:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         parsed = json.loads(match.group(0)) if match else {"narration": []}
 
-    narration = []
+    script = []
     for n in parsed.get("narration", []):
+        slide_id = n["slide_id"]
+        if slide_id not in known_ids:
+            raise RuntimeError(f"build_short: Claude returned slide_id {slide_id!r}, not in job.narration")
         words = len((n.get("script") or "").split())
-        narration.append({
-            "sequenceIndex": n["sequence_index"], "slideId": n["slide_id"], "script": n.get("script", ""),
+        script.append({
+            "sequenceIndex": n["sequence_index"], "slideId": slide_id, "script": n.get("script", ""),
             "estimatedWords": words, "estimatedSeconds": round((words / WORDS_PER_MINUTE) * 60),
         })
-    job["narration"] = sorted(narration, key=lambda n: n["sequenceIndex"])
+    short["script"] = sorted(script, key=lambda n: n["sequenceIndex"])
 
 
 def _voice_cache_path() -> str:
     return os.path.join(config.DATA_DIR, "voice-cache.json")
 
 
-def resolve_voice(job: dict) -> None:
-    voice = job["params"]["voice"]
+def resolve_voice(short: dict) -> None:
+    voice = short["voice"]
     if voice["mode"] == "preset":
         voice["resolvedVoiceId"] = voice["presetVoiceId"]
         return
@@ -409,11 +398,11 @@ def resolve_voice(job: dict) -> None:
     voice["resolvedVoiceId"] = voice_id
 
 
-def synthesize_audio(job: dict, audio_dir: str) -> None:
+def synthesize_audio(short: dict, audio_dir: str) -> None:
     os.makedirs(audio_dir, exist_ok=True)
-    voice_id = job["params"]["voice"]["resolvedVoiceId"]
+    voice_id = short["voice"]["resolvedVoiceId"]
     audio = []
-    for n in job["narration"]:
+    for n in short["script"]:
         resp = requests.post(
             f"{config.ELEVENLABS_BASE_URL}/v1/text-to-speech/{voice_id}",
             headers={"xi-api-key": config.ELEVENLABS_API_KEY, "Content-Type": "application/json"},
@@ -430,4 +419,4 @@ def synthesize_audio(job: dict, audio_dir: str) -> None:
         duration = MP3(path).info.length
 
         audio.append({"sequenceIndex": seq, "path": path, "durationSeconds": duration})
-    job["audio"] = audio
+    short["audio"] = audio

@@ -32,6 +32,19 @@ def fail_job(job: dict, step: str, message: str, detail: str = "") -> None:
     db.save_job(job)
 
 
+def fail_short(job: dict, short: dict, step: str, message: str, detail: str = "") -> None:
+    """A short failing doesn't fail the job - the permanent 1:1 narration
+    and every other short are untouched, so the job always returns to its
+    resting ready_for_review state, free to try another short."""
+    short["phase"] = "failed"
+    short["step"] = step
+    short["error"] = {"step": step, "message": message, "detail": detail}
+    job["activeShortId"] = None
+    job["phase"] = "ready_for_review"
+    job["step"] = "ready_for_review"
+    db.save_job(job)
+
+
 def run_prepare_pipeline(job: dict) -> None:
     job_dir = os.path.join(config.DATA_DIR, "jobs", job["jobId"])
 
@@ -81,71 +94,84 @@ def run_prepare_pipeline(job: dict) -> None:
         fail_job(job, job.get("step", "unknown"), f"{type(e).__name__}: {e}", traceback.format_exc())
 
 
+def _active_short(job: dict) -> dict | None:
+    active_id = job.get("activeShortId")
+    return next((s for s in job.get("shorts", []) if s["shortId"] == active_id), None)
+
+
 def run_condense_pipeline(job: dict) -> None:
-    """Shortens the already-cleaned narration to job["params"]["targetDurationSeconds"],
-    resolves the chosen voice, and synthesizes audio - the duration/voice/TTS
-    stage deferred out of the automatic prepare flow, now triggered
-    explicitly via POST /jobs/<id>/condense once the job is ready_for_review."""
+    """Builds the short named by job["activeShortId"] (see
+    pipeline.build_short), resolves its voice, and synthesizes its audio -
+    triggered explicitly via POST /jobs/<id>/shorts. Never touches
+    job["narration"], the permanent 1:1 pool every short is built from."""
+    short = _active_short(job)
+    if short is None:
+        fail_job(job, "condensing_narration", "activeShortId does not match any short in job.shorts")
+        return
+
     job_dir = os.path.join(config.DATA_DIR, "jobs", job["jobId"])
-
     try:
-        job["step"] = "condensing_narration"
+        short["step"] = "condensing_narration"
         db.save_job(job)
-        pipeline.condense_narration(job)
-        db.save_job(job)
-
-        job["step"] = "resolving_voice"
-        db.save_job(job)
-        pipeline.resolve_voice(job)
+        pipeline.build_short(job, short)
         db.save_job(job)
 
-        job["step"] = "synthesizing_audio"
+        short["step"] = "resolving_voice"
         db.save_job(job)
-        audio_dir = os.path.join(job_dir, "audio")
-        pipeline.synthesize_audio(job, audio_dir)
+        pipeline.resolve_voice(short)
+        db.save_job(job)
 
-        job["phase"] = "ready_for_render"
-        job["step"] = "ready_for_render"
+        short["step"] = "synthesizing_audio"
+        db.save_job(job)
+        audio_dir = os.path.join(job_dir, "audio", short["shortId"])
+        pipeline.synthesize_audio(short, audio_dir)
+
+        short["phase"] = "ready_for_render"
+        short["step"] = "ready_for_render"
+        job["activeShortId"] = None
+        job["phase"] = "ready_for_review"
+        job["step"] = "ready_for_review"
         db.save_job(job)
 
     except Exception as e:
-        fail_job(job, job.get("step", "unknown"), f"{type(e).__name__}: {e}", traceback.format_exc())
+        fail_short(job, short, short.get("step", "unknown"), f"{type(e).__name__}: {e}", traceback.format_exc())
 
 
-def run_render(job: dict) -> None:
-    """Dispatches a Fargate render task on the first tick a job enters phase
-    'rendering', then polls that task's status on every later tick until it
-    stops (or times out) - never blocks the cron worker on the render
-    itself, unlike the old in-process version."""
-    render_state = job.setdefault("render", {})
+def run_render(job: dict, short: dict) -> None:
+    """Dispatches a Fargate render task on the first tick this short enters
+    phase 'rendering', then polls that task's status on every later tick
+    until it stops (or times out) - never blocks the cron worker on the
+    render itself. Scoped entirely to one short; every other short on the
+    job is untouched."""
+    render_state = short.setdefault("render", {})
     task_arn = render_state.get("fargateTaskArn")
 
     if not task_arn:
         try:
             overrides = render_state.get("pendingOverrides") or {}
             render_count = render_state.get("renderCount", 0) + 1
-            task_arn = fargate_client.dispatch_render(job, render_count)
+            task_arn = fargate_client.dispatch_render(job, short, render_count)
             render_state["fargateTaskArn"] = task_arn
             render_state["fargatePendingRenderCount"] = render_count
             render_state["fargateAppliedOverrides"] = overrides
             render_state["fargateDispatchedAt"] = now_iso()
             db.save_job(job)
         except Exception as e:
-            fail_job(job, "rendering", f"{type(e).__name__}: {e}", traceback.format_exc())
+            fail_short(job, short, "rendering", f"{type(e).__name__}: {e}", traceback.format_exc())
         return
 
     try:
         status = fargate_client.check_task(task_arn)
     except Exception as e:
-        fail_job(job, "rendering", f"{type(e).__name__}: {e}", traceback.format_exc())
+        fail_short(job, short, "rendering", f"{type(e).__name__}: {e}", traceback.format_exc())
         return
 
     if status["state"] == "running":
         dispatched_at = datetime.fromisoformat(render_state["fargateDispatchedAt"])
         elapsed = (datetime.now(timezone.utc) - dispatched_at).total_seconds()
         if elapsed > config.RENDER_TIMEOUT_MINUTES * 60:
-            fail_job(
-                job, "rendering", "Fargate render task timed out",
+            fail_short(
+                job, short, "rendering", "Fargate render task timed out",
                 f"task {task_arn} still running after {config.RENDER_TIMEOUT_MINUTES} minutes",
             )
         return
@@ -153,7 +179,7 @@ def run_render(job: dict) -> None:
     if status["state"] == "succeeded":
         render_count = render_state.pop("fargatePendingRenderCount")
         overrides = render_state.pop("fargateAppliedOverrides", {})
-        output_url = fargate_client.presigned_output_url(job["jobId"], render_count)
+        output_url = fargate_client.presigned_output_url(job["jobId"], short["shortId"], render_count)
         now = now_iso()
         history_entry = {
             "renderCount": render_count,
@@ -169,12 +195,15 @@ def run_render(job: dict) -> None:
         render_state.pop("pendingOverrides", None)
         render_state.pop("fargateTaskArn", None)
         render_state.pop("fargateDispatchedAt", None)
-        job["phase"] = "done"
-        job["step"] = "done"
+        short["phase"] = "done"
+        short["step"] = "done"
+        job["activeShortId"] = None
+        job["phase"] = "ready_for_review"
+        job["step"] = "ready_for_review"
         db.save_job(job)
         return
 
-    fail_job(job, "rendering", "Fargate render task failed", status.get("detail", ""))
+    fail_short(job, short, "rendering", "Fargate render task failed", status.get("detail", ""))
 
 
 def main():
@@ -198,7 +227,11 @@ def main():
         elif job["phase"] == "condensing":
             run_condense_pipeline(job)
         elif job["phase"] == "rendering":
-            run_render(job)
+            short = _active_short(job)
+            if short is None:
+                fail_job(job, "rendering", "activeShortId does not match any short in job.shorts")
+            else:
+                run_render(job, short)
     finally:
         db.release_job(job["jobId"])
     print(f"finished job {job['jobId']} (phase={job['phase']})")

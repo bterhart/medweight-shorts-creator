@@ -1,8 +1,9 @@
-"""Flask app exposing the exact same four endpoints the UI already talks to
-(POST /jobs, GET /jobs/<id>/status, POST /jobs/<id>/render, GET /files) - so
-ui/ needs zero changes after this replaces the n8n workflows."""
+"""Flask app for the job pipeline and its shorts: POST /jobs, GET
+/jobs/<id>/status, POST /jobs/<id>/shorts, POST /jobs/<id>/shorts/<shortId>/render,
+GET /files, plus the narration-prompts library."""
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 
 import pymysql
@@ -38,19 +39,11 @@ def create_job():
             "order": p.get("order", i),
         })
 
-    voice = params["voice"]
     job = {
         "jobId": job_id, "createdAt": now, "updatedAt": now,
         "phase": "prepare", "step": "saving_inputs", "error": None,
         "params": {
-            "targetDurationSeconds": params["targetDurationSeconds"],
             "narrationStyle": params.get("narrationStyle", ""),
-            "voice": {
-                "mode": voice["mode"],
-                "presetVoiceId": voice.get("presetVoiceId"),
-                "customDescription": voice.get("customDescription"),
-                "resolvedVoiceId": None,
-            },
             "transition": {
                 "type": params["transition"]["type"],
                 "transitionSeconds": params["transition"].get("transitionSeconds", 0.75),
@@ -68,8 +61,7 @@ def create_job():
             },
             "pdfs": pdf_meta,
         },
-        "slides": [], "alignment": [], "narration": [], "audio": [],
-        "render": {"renderedAt": None, "outputPath": None, "outputUrl": None, "renderCount": 0},
+        "slides": [], "alignment": [], "narration": [], "shorts": [], "activeShortId": None,
         "manus": {"taskIds": [], "status": None},
     }
 
@@ -100,41 +92,65 @@ def job_status(job_id):
     return jsonify(job)
 
 
-@app.post("/jobs/<job_id>/condense")
-def trigger_condense(job_id):
+@app.post("/jobs/<job_id>/shorts")
+def create_short(job_id):
+    """Creates a new short: a duration-targeted, topic-focused condensed
+    narrative built from the job's permanent 1:1 narration (see
+    pipeline.build_short). A job can hold any number of these - e.g. a 90s
+    teaser and a 5-minute full summary side by side, built and re-rendered
+    independently."""
     job = db.get_job(job_id)
     if not job:
         return jsonify({"error": "not found"}), 404
     if job["phase"] != "ready_for_review":
-        return jsonify({"error": f"job is not ready for condensing (phase={job['phase']})"}), 400
+        return jsonify({"error": f"job is not ready for a new short (phase={job['phase']})"}), 400
+    if job.get("activeShortId"):
+        return jsonify({"error": "another short is currently processing for this job - try again once it finishes"}), 409
 
     body = request.get_json(silent=True) or {}
+    topic = (body.get("topic") or "").strip()
     target_duration = body.get("targetDurationSeconds")
     voice = body.get("voice") or {}
+    if not topic:
+        return jsonify({"error": "topic is required"}), 400
     if not target_duration or not voice.get("mode"):
         return jsonify({"error": "targetDurationSeconds and voice are required"}), 400
 
-    job["params"]["targetDurationSeconds"] = target_duration
-    job["params"]["voice"] = {
-        "mode": voice["mode"],
-        "presetVoiceId": voice.get("presetVoiceId"),
-        "customDescription": voice.get("customDescription"),
-        "resolvedVoiceId": None,
+    short_id = str(uuid.uuid4())
+    short = {
+        "shortId": short_id, "createdAt": now_iso(),
+        "topic": topic, "targetDurationSeconds": target_duration,
+        "voice": {
+            "mode": voice["mode"],
+            "presetVoiceId": voice.get("presetVoiceId"),
+            "customDescription": voice.get("customDescription"),
+            "resolvedVoiceId": None,
+        },
+        "phase": "condensing", "step": "condensing_narration", "error": None,
+        "script": [], "audio": [],
+        "render": {"renderedAt": None, "outputUrl": None, "renderCount": 0},
     }
+    job.setdefault("shorts", []).append(short)
+    job["activeShortId"] = short_id
     job["phase"] = "condensing"
     job["step"] = "condensing_narration"
     db.save_job(job)
 
-    return jsonify({"jobId": job_id, "phase": job["phase"], "step": job["step"]})
+    return jsonify({"jobId": job_id, "shortId": short_id, "phase": job["phase"], "step": job["step"]})
 
 
-@app.post("/jobs/<job_id>/render")
-def trigger_render(job_id):
+@app.post("/jobs/<job_id>/shorts/<short_id>/render")
+def trigger_short_render(job_id, short_id):
     job = db.get_job(job_id)
     if not job:
         return jsonify({"error": "not found"}), 404
-    if job["phase"] not in ("ready_for_render", "done"):
-        return jsonify({"error": f"job is not ready for render (phase={job['phase']})"}), 400
+    short = next((s for s in job.get("shorts", []) if s["shortId"] == short_id), None)
+    if not short:
+        return jsonify({"error": "short not found"}), 404
+    if short["phase"] not in ("ready_for_render", "done"):
+        return jsonify({"error": f"short is not ready for render (phase={short['phase']})"}), 400
+    if job.get("activeShortId"):
+        return jsonify({"error": "another short is currently processing for this job - try again once it finishes"}), 409
 
     body = request.get_json(silent=True) or {}
     overrides = {}
@@ -147,13 +163,16 @@ def trigger_render(job_id):
     if body.get("resolution"):
         overrides["resolution"] = body["resolution"]
 
-    job.setdefault("render", {})
-    job["render"]["pendingOverrides"] = overrides
+    short.setdefault("render", {})
+    short["render"]["pendingOverrides"] = overrides
+    short["phase"] = "rendering"
+    short["step"] = "rendering"
+    job["activeShortId"] = short_id
     job["phase"] = "rendering"
     job["step"] = "rendering"
     db.save_job(job)
 
-    return jsonify({"jobId": job_id, "phase": job["phase"], "step": job["step"]})
+    return jsonify({"jobId": job_id, "shortId": short_id, "phase": job["phase"], "step": job["step"]})
 
 
 @app.get("/prompts")
