@@ -218,9 +218,10 @@
 
     "manus": {
       "type": "object",
+      "description": "One Manus task per chunk of pipeline.SLIDES_PER_MANUS_CHUNK slides - task.create has both a text-size cap and a separate, confirmed-live file-attachment ceiling that a single call can't always satisfy for a real deck.",
       "properties": {
-        "taskId": { "type": ["string", "null"] },
-        "status": { "type": ["string", "null"] }
+        "taskIds": { "type": "array", "items": { "type": "string" }, "description": "One per chunk, in order, appended as each chunk's task is created." },
+        "status": { "type": ["string", "null"], "description": "Status of the most recently created chunk's task." }
       }
     }
   }

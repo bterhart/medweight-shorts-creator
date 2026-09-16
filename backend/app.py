@@ -69,7 +69,7 @@ def create_job():
         },
         "slides": [], "alignment": [], "narration": [], "audio": [],
         "render": {"renderedAt": None, "outputPath": None, "outputUrl": None, "renderCount": 0},
-        "manus": {"taskId": None, "status": None},
+        "manus": {"taskIds": [], "status": None},
     }
 
     for d in ("input", "slides", "audio", "output"):

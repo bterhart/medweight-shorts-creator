@@ -104,42 +104,40 @@ def build_alignment_schema() -> dict:
     }
 
 
+SLIDES_PER_MANUS_CHUNK = 12
+# Confirmed live, not assumed: a real 33-slide/33-file-attachment task.create
+# call reproducibly failed with Manus's own internal error ("node server
+# request failed"), while the exact same job's transcript+schema succeeded
+# fine at 14 slides. The ceiling is somewhere between 14 and 33; 12 is a
+# conservative choice under that confirmed-working number.
+MANUS_CHUNK_OVERLAP_CHARS = 2500
+
+
 def run_alignment(job: dict) -> None:
-    """Creates the Manus task and polls it to completion in-process - a
-    simple blocking loop, since we're no longer constrained to n8n's
-    cyclic-node polling pattern."""
-    transcript = job["sources"]["srt"]["fullText"]
-    truncated = False
-    if len(transcript) > MAX_TRANSCRIPT_CHARS:
-        transcript = transcript[:MAX_TRANSCRIPT_CHARS]
-        truncated = True
+    """Aligns the full transcript to the full slide deck, one Manus task per
+    chunk of SLIDES_PER_MANUS_CHUNK slides. Two independent per-call limits
+    are both confirmed live: the ~5,000-estimated-token text cap (handled by
+    windowing, same as before) and the file-attachment ceiling above
+    (handled by chunking) - a single call still can't just send everything
+    even for a small-enough slide count, since the full transcript alone can
+    exceed the text cap regardless of file count.
 
-    slide_meta = [
-        {"slide_id": s["slideId"], "pdf_role": next(p["role"] for p in job["sources"]["pdfs"] if p["id"] == s["pdfId"])}
-        for s in job["slides"]
-    ]
-    prompt_text = (
-        "You are aligning a video transcript to presentation slide images.\n\n"
-        "Slide images are attached below as file parts, in the order listed here, each tagged 'primary' "
-        "or 'supplementary' by source deck. Build the main narrative sequence from the primary deck; pull "
-        "a slide from a supplementary deck only when it covers transcript content the primary deck does "
-        "not show. Skip slides (title/agenda/blank) that have no corresponding narrated content.\n\n"
-        f"Full transcript{' (truncated to fit the message size limit)' if truncated else ''}:\n{transcript}\n\n"
-        f"Slide order and role metadata (matches the order of the attached file parts):\n{json.dumps(slide_meta)}\n\n"
-        "Return, in narrative order, which slides correspond to which excerpt of the transcript."
-    )
-    content = [{"type": "text", "text": prompt_text}] + [
-        {"type": "file", "file_id": s["manusFileId"]} for s in job["slides"]
-    ]
-
-    task_id = manus_client.create_task(content, build_alignment_schema())
-    job["manus"]["taskId"] = task_id
-    job["manus"]["status"] = "running"
-
-    value = manus_client.poll_task(task_id)
-    job["manus"]["status"] = "stopped"
-
-    known_ids = {s["slideId"] for s in job["slides"]}
+    The transcript is split into per-chunk windows proportional to each
+    chunk's position in the slide deck, padded with overlap on both sides so
+    uneven presenter pacing doesn't strand content right at a chunk
+    boundary. This is a heuristic, not exact: a slide whose real narration
+    falls outside its chunk's window (even with overlap) will just be
+    skipped, the same graceful behavior Manus already has for slides with no
+    corresponding content. worker.py doesn't call db.save_job() until this
+    whole function returns (or raises), so alignment/manus fields below are
+    mutated onto `job` progressively as each chunk completes - if a later
+    chunk fails, worker.py's exception handler still persists whatever
+    chunks already succeeded (and their Manus credit cost isn't invisible),
+    even though a retry can't yet skip redoing them."""
+    full_transcript = job["sources"]["srt"]["fullText"]
+    total_chars = len(full_transcript)
+    slides = job["slides"]
+    known_ids = {s["slideId"] for s in slides}
 
     def resolve_slide_id(raw_id):
         """Manus is asked to echo back our slide_id exactly, but with a real
@@ -156,16 +154,61 @@ def run_alignment(job: dict) -> None:
             f"Manus returned slide_id {raw_id!r}, which doesn't match any known slide ID {sorted(known_ids)}"
         )
 
-    job["alignment"] = [
-        {
-            "sequenceIndex": i,
-            "slideId": resolve_slide_id(a["slide_id"]),
-            "transcriptExcerpt": a["transcript_excerpt"],
-            "confidence": a.get("confidence"),
-            "notes": a.get("notes", ""),
-        }
-        for i, a in enumerate(value.get("alignment", []))
-    ]
+    chunks = [slides[i:i + SLIDES_PER_MANUS_CHUNK] for i in range(0, len(slides), SLIDES_PER_MANUS_CHUNK)]
+    num_chunks = len(chunks)
+
+    job["alignment"] = []
+    job["manus"]["taskIds"] = []
+    seq = 0
+    for i, chunk_slides in enumerate(chunks):
+        nominal_start = round(total_chars * i / num_chunks)
+        nominal_end = round(total_chars * (i + 1) / num_chunks)
+        window = full_transcript[max(0, nominal_start - MANUS_CHUNK_OVERLAP_CHARS):
+                                  min(total_chars, nominal_end + MANUS_CHUNK_OVERLAP_CHARS)]
+        truncated = False
+        if len(window) > MAX_TRANSCRIPT_CHARS:
+            window = window[:MAX_TRANSCRIPT_CHARS]
+            truncated = True
+
+        slide_meta = [
+            {"slide_id": s["slideId"], "pdf_role": next(p["role"] for p in job["sources"]["pdfs"] if p["id"] == s["pdfId"])}
+            for s in chunk_slides
+        ]
+        prompt_text = (
+            "You are aligning a video transcript to presentation slide images.\n\n"
+            f"This is part {i + 1} of {num_chunks} of a single continuous presentation, split up only "
+            "because of a message-size limit - only the slides attached below (a contiguous slice of the "
+            "full deck) need aligning in this call.\n\n"
+            "Slide images are attached below as file parts, in the order listed here, each tagged 'primary' "
+            "or 'supplementary' by source deck. Build the main narrative sequence from the primary deck; pull "
+            "a slide from a supplementary deck only when it covers transcript content the primary deck does "
+            "not show. Skip slides (title/agenda/blank) that have no corresponding narrated content.\n\n"
+            f"Transcript excerpt covering approximately this slice, padded with overlap on each side so "
+            f"content right at the boundary isn't missed{' (truncated to fit the message size limit)' if truncated else ''}:\n"
+            f"{window}\n\n"
+            f"Slide order and role metadata (matches the order of the attached file parts):\n{json.dumps(slide_meta)}\n\n"
+            "Return, in narrative order, which of these attached slides correspond to which excerpt of the transcript."
+        )
+        content = [{"type": "text", "text": prompt_text}] + [
+            {"type": "file", "file_id": s["manusFileId"]} for s in chunk_slides
+        ]
+
+        task_id = manus_client.create_task(content, build_alignment_schema())
+        job["manus"]["taskIds"].append(task_id)
+        job["manus"]["status"] = "running"
+
+        value = manus_client.poll_task(task_id)
+        job["manus"]["status"] = "stopped"
+
+        for a in value.get("alignment", []):
+            job["alignment"].append({
+                "sequenceIndex": seq,
+                "slideId": resolve_slide_id(a["slide_id"]),
+                "transcriptExcerpt": a["transcript_excerpt"],
+                "confidence": a.get("confidence"),
+                "notes": a.get("notes", ""),
+            })
+            seq += 1
 
 
 def clean_narration(job: dict) -> None:
