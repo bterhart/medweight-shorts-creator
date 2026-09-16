@@ -19,6 +19,13 @@ WORDS_PER_MINUTE = 130
 # no way around it by splitting - a real constraint hit during development,
 # not a guess. ~4 chars/token is a conservative estimate that leaves margin.
 MAX_TRANSCRIPT_CHARS = 16000
+# Confirmed live: dividing a short target duration's word budget evenly
+# across many segments (e.g. 90s / 65 segments = ~3 words/segment) gave
+# Claude an effectively unsolvable per-segment task and it never produced
+# output before hitting max_tokens. Below this floor, a segment isn't a
+# real sentence - it's dropped from the narration entirely instead (see
+# select_segments_for_budget), rather than force-condensed into a fragment.
+MIN_WORDS_PER_SEGMENT = 12
 
 
 def parse_srt(srt_path: str) -> dict:
@@ -276,6 +283,21 @@ def clean_narration(job: dict) -> None:
     ]
 
 
+def select_segments_for_budget(cleaned: list, total_word_budget: int, min_words: int = MIN_WORDS_PER_SEGMENT) -> list:
+    """Picks which cleaned segments can get a real (>= min_words) word
+    budget out of total_word_budget, rather than spreading it thin across
+    every segment regardless of count. When everything fits, returns all of
+    them unchanged. Otherwise samples evenly across the full sequence (not
+    just the longest excerpts) so the result still covers the presentation's
+    narrative arc start to end, rather than clustering on one section."""
+    max_segments = max(1, total_word_budget // min_words)
+    if len(cleaned) <= max_segments:
+        return cleaned
+    step = len(cleaned) / max_segments
+    indices = sorted({min(len(cleaned) - 1, round(i * step)) for i in range(max_segments)})
+    return [cleaned[i] for i in indices]
+
+
 def condense_narration(job: dict) -> None:
     """Shortens the already-cleaned narration (job["narration"], produced by
     clean_narration - filler and personal references already removed) to
@@ -283,26 +305,34 @@ def condense_narration(job: dict) -> None:
     job["alignment"]'s raw excerpts - sourcing from the raw text would
     silently undo the cleaning pass."""
     cleaned = job["narration"]
-    total_chars = sum(len(n["script"]) for n in cleaned) or 1
     target_seconds = job["params"]["targetDurationSeconds"]
     total_word_budget = round(target_seconds / 60 * WORDS_PER_MINUTE)
+
+    selected = select_segments_for_budget(cleaned, total_word_budget)
+    total_chars = sum(len(n["script"]) for n in selected) or 1
 
     segments = [
         {
             "sequence_index": n["sequenceIndex"],
             "slide_id": n["slideId"],
             "excerpt": n["script"],
-            "word_budget": max(5, round((len(n["script"]) / total_chars) * total_word_budget)),
+            "word_budget": max(MIN_WORDS_PER_SEGMENT, round((len(n["script"]) / total_chars) * total_word_budget)),
         }
-        for n in cleaned
+        for n in selected
     ]
     style = job["params"].get("narrationStyle") or "clear, neutral documentary narration"
+    skip_note = (
+        f" {len(cleaned) - len(selected)} slides from the source deck aren't included below - the target "
+        "duration doesn't allow narrating all of them, so a subset spanning the full presentation was "
+        "already chosen; don't try to account for content that isn't in the segments below.\n"
+        if len(selected) < len(cleaned) else ""
+    )
     prompt = (
         f'Condense each transcript excerpt below into narration matching this style: "{style}".\n'
         f"Total narration across all segments must sum to about {total_word_budget} words "
         f"(~{target_seconds}s spoken at {WORDS_PER_MINUTE}wpm).\n"
         "Each segment lists its own word budget; stay close to it while keeping sentences natural and "
-        "self-contained (each plays over one static image).\n"
+        f"self-contained (each plays over one static image).\n{skip_note}"
         'Respond with ONLY JSON of the shape {"narration":[{"sequence_index":0,"slide_id":"...","script":"..."}]}.\n\n'
         f"Segments:\n{json.dumps(segments, indent=2)}"
     )
