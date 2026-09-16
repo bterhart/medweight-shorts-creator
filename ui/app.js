@@ -195,6 +195,7 @@ $("submit-btn").addEventListener("click", async () => {
     $("progress-job-id").textContent = state.jobId;
     renderStepList(data.step);
     startPolling("prepare");
+    loadJobList();
   } catch (err) {
     showError($("setup-error"), `Failed to start job: ${err.message}`);
     $("submit-btn").disabled = false;
@@ -485,6 +486,67 @@ $("prompt-save-as-btn").addEventListener("click", async () => {
   }
 });
 
+// ---------- existing-job picker ----------
+// Refreshing the page loses state.jobId (in-memory only), which otherwise
+// means the only way back to an already-prepared job's review screen is to
+// resubmit and re-spend Manus/Claude/ElevenLabs credits on work that's
+// already done - this picker is the fix for that.
+async function loadJobList() {
+  try {
+    const res = await fetch(`${getApiBase()}/jobs`);
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const jobs = await res.json();
+    const picker = $("job-picker");
+    const previousValue = picker.value;
+    picker.innerHTML = '<option value="">— New job (use the form below) —</option>';
+    for (const j of jobs) {
+      const opt = document.createElement("option");
+      opt.value = j.jobId;
+      const when = new Date(j.createdAt).toLocaleString();
+      opt.textContent = `${when} — ${j.phase} — ${j.jobId.slice(0, 8)}`;
+      picker.appendChild(opt);
+    }
+    picker.value = previousValue;
+  } catch (err) {
+    showError($("job-picker-error"), `Failed to load job list: ${err.message}`);
+  }
+}
+
+$("job-picker").addEventListener("change", async () => {
+  const jobId = $("job-picker").value;
+  showError($("job-picker-error"), "");
+  if (!jobId) return;
+
+  clearInterval(state.pollTimer);
+  state.jobId = jobId;
+  $("setup-section").hidden = true;
+  $("progress-section").hidden = true;
+  $("review-section").hidden = true;
+  $("result-section").hidden = true;
+
+  try {
+    const res = await fetch(`${getApiBase()}/jobs/${jobId}/status`);
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const job = await res.json();
+    state.currentJob = job;
+
+    if (job.phase === "failed") {
+      $("progress-section").hidden = false;
+      renderStepList(job.step);
+      showError($("progress-error"), job.error ? job.error.message : "Job failed.");
+    } else if (job.phase === "ready_for_review" || job.phase === "done") {
+      showReview(job);
+    } else {
+      $("progress-section").hidden = false;
+      $("progress-job-id").textContent = jobId;
+      startPolling("prepare");
+    }
+  } catch (err) {
+    showError($("job-picker-error"), `Failed to load job: ${err.message}`);
+  }
+});
+
 // initial state
 validateSetup();
 loadPrompts();
+loadJobList();

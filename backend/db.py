@@ -114,6 +114,23 @@ def new_job_id() -> str:
     return str(uuid.uuid4())
 
 
+def list_jobs(limit: int = 100) -> list:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, phase, step, created_at FROM jobs ORDER BY created_at DESC LIMIT %s",
+                (limit,),
+            )
+            rows = cur.fetchall()
+        return [
+            {"jobId": r["id"], "phase": r["phase"], "step": r["step"], "createdAt": r["created_at"].isoformat()}
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
 def list_prompts() -> list:
     conn = get_connection()
     try:

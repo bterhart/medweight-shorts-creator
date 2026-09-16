@@ -87,6 +87,11 @@ def create_job():
     return jsonify({"jobId": job_id, "phase": job["phase"], "step": job["step"]})
 
 
+@app.get("/jobs")
+def list_jobs():
+    return jsonify(db.list_jobs())
+
+
 @app.get("/jobs/<job_id>/status")
 def job_status(job_id):
     job = db.get_job(job_id)
