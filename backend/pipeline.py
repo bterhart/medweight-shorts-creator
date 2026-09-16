@@ -271,19 +271,24 @@ def clean_narration(job: dict) -> None:
 
 
 def condense_narration(job: dict) -> None:
-    alignment = job["alignment"]
-    total_chars = sum(len(a["transcriptExcerpt"]) for a in alignment) or 1
+    """Shortens the already-cleaned narration (job["narration"], produced by
+    clean_narration - filler and personal references already removed) to
+    fit a target duration. Deliberately reads job["narration"] here, not
+    job["alignment"]'s raw excerpts - sourcing from the raw text would
+    silently undo the cleaning pass."""
+    cleaned = job["narration"]
+    total_chars = sum(len(n["script"]) for n in cleaned) or 1
     target_seconds = job["params"]["targetDurationSeconds"]
     total_word_budget = round(target_seconds / 60 * WORDS_PER_MINUTE)
 
     segments = [
         {
-            "sequence_index": a["sequenceIndex"],
-            "slide_id": a["slideId"],
-            "excerpt": a["transcriptExcerpt"],
-            "word_budget": max(5, round((len(a["transcriptExcerpt"]) / total_chars) * total_word_budget)),
+            "sequence_index": n["sequenceIndex"],
+            "slide_id": n["slideId"],
+            "excerpt": n["script"],
+            "word_budget": max(5, round((len(n["script"]) / total_chars) * total_word_budget)),
         }
-        for a in alignment
+        for n in cleaned
     ]
     style = job["params"].get("narrationStyle") or "clear, neutral documentary narration"
     prompt = (
@@ -375,8 +380,8 @@ def synthesize_audio(job: dict, audio_dir: str) -> None:
         with open(path, "wb") as f:
             f.write(resp.content)
 
-        from moviepy import AudioFileClip
-        duration = AudioFileClip(path).duration
+        from mutagen.mp3 import MP3
+        duration = MP3(path).info.length
 
         audio.append({"sequenceIndex": seq, "path": path, "durationSeconds": duration})
     job["audio"] = audio

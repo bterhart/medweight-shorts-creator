@@ -106,9 +106,12 @@ Flask app is reachable — e.g. `https://medweight.ca/chatbot-shorts` (no traili
 3. Poll `GET /chatbot-shorts/jobs/<id>/status` (or just watch the UI) until `phase` reaches
    `ready_for_review` or `failed`. A `failed` phase's `error.detail` field has the full Python traceback —
    that's the first place to look.
-4. `ready_for_review` is currently the end of the line - duration-based condensing, voice resolution, TTS,
-   and rendering are a separate, not-yet-built later stage. `POST /chatbot-shorts/jobs/<id>/render` will
-   reject any job that hasn't reached that stage's (not-yet-reachable) `ready_for_render` phase.
+4. From `ready_for_review`, trigger `POST /chatbot-shorts/jobs/<id>/condense` (UI: the "Finalize narration"
+   panel in Step 3) with a target duration and voice - this shortens the narration, resolves the voice, and
+   synthesizes audio via the next cron tick(s), same claim/process pattern as step 2.
+5. Once `ready_for_render`, trigger a render (UI button, or `POST /chatbot-shorts/jobs/<id>/render`) and
+   watch the next cron tick pick it up the same way. `POST /jobs/<id>/render` rejects any job not yet at
+   `ready_for_render`.
 
 ## Before this is anything but a test
 

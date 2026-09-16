@@ -12,8 +12,8 @@
 
     "phase": {
       "type": "string",
-      "description": "Coarse pipeline phase. 'prepare' covers alignment against the full transcript/slide deck plus narration cleaning (filler and personal references removed - no duration budget applied). 'ready_for_review' is the human-reviewable slide+text checkpoint this currently stops at. Duration-based condensing, voice resolution, TTS, and rendering are a separate, not-yet-built later stage - 'ready_for_render'/'rendering'/'done' are reserved for it and unreachable automatically right now.",
-      "enum": ["prepare", "ready_for_review", "ready_for_render", "rendering", "done", "failed"]
+      "description": "Coarse pipeline phase. 'prepare' covers alignment against the full transcript/slide deck plus narration cleaning (filler and personal references removed - no duration budget applied). 'ready_for_review' is the human-reviewable slide+text checkpoint prepare stops at. 'condensing' is explicitly triggered via POST /jobs/<id>/condense once a target duration/voice are chosen there - it shortens the cleaned narration, resolves the voice, and synthesizes audio. 'ready_for_render'/'rendering'/'done' follow from that.",
+      "enum": ["prepare", "ready_for_review", "condensing", "ready_for_render", "rendering", "done", "failed"]
     },
     "step": {
       "type": "string",
@@ -53,7 +53,7 @@
         "targetDurationSeconds": {
           "type": "integer",
           "enum": [45, 90, 180, 300],
-          "description": "Snap points for 45s / 90s / 3min / 5min. Still required by the API but currently unused - the UI sends a fixed default; real duration-based condensing is a later, not-yet-built step."
+          "description": "Snap points for 45s / 90s / 3min / 5min. Required at job creation (the UI sends a placeholder default there, unused) and overwritten with the real chosen value by POST /jobs/<id>/condense once the job reaches ready_for_review."
         },
         "narrationStyle": {
           "type": "string",
@@ -165,7 +165,7 @@
 
     "narration": {
       "type": "array",
-      "description": "Per-segment script cleaned of filler and personal references, at full length - not sized to any target duration (that's a separate, not-yet-built later step). Populated during 'cleaning_narration' from job.alignment's raw excerpts (kept untouched alongside this, so cleaning is never irreversible). This plus 'slides' is the human-reviewable output phase=ready_for_review stops at.",
+      "description": "Populated during 'cleaning_narration' from job.alignment's raw excerpts (kept untouched alongside this, so cleaning is never irreversible) - at that point, full-length, cleaned of filler/personal references, not yet sized to a duration. Overwritten in place during 'condensing_narration' (POST /jobs/<id>/condense) with the duration-shortened version once a target length and voice are chosen at review time.",
       "items": {
         "type": "object",
         "required": ["sequenceIndex", "slideId", "script"],
@@ -179,7 +179,7 @@
 
     "audio": {
       "type": "array",
-      "description": "One synthesized clip per narration segment, in the same order. Populated during 'synthesizing_audio' / 'probing_durations' - part of the later duration/voice/render stage, not produced automatically right now. Reaching phase=ready_for_render requires this array to be fully populated with real durations.",
+      "description": "One synthesized clip per narration segment, in the same order. Populated during 'synthesizing_audio' (part of the 'condensing' phase, POST /jobs/<id>/condense). Reaching phase=ready_for_render requires this array to be fully populated with real durations.",
       "items": {
         "type": "object",
         "required": ["sequenceIndex", "path", "durationSeconds"],

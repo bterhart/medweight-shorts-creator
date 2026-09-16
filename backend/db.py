@@ -78,7 +78,7 @@ def claim_next_job(lease_minutes: int = 10) -> dict | None:
             cur.execute(
                 """
                 SELECT id FROM jobs
-                WHERE phase IN ('prepare', 'rendering')
+                WHERE phase IN ('prepare', 'condensing', 'rendering')
                   AND (locked_at IS NULL OR locked_at < UTC_TIMESTAMP() - INTERVAL %s MINUTE)
                 ORDER BY created_at ASC
                 LIMIT 1

@@ -142,9 +142,9 @@ function renderPdfList() {
   });
 }
 
-// ---------- voice preset/custom toggle ----------
-$("voice-preset").addEventListener("change", () => {
-  $("voice-custom").hidden = $("voice-preset").value !== "custom";
+// ---------- voice preset/custom toggle (Step 3 - finalize narration) ----------
+$("condense-voice-preset").addEventListener("change", () => {
+  $("condense-voice-custom").hidden = $("condense-voice-preset").value !== "custom";
 });
 
 // ---------- setup validation ----------
@@ -157,18 +157,15 @@ function validateSetup() {
 // ---------- submit (Phase 1) ----------
 $("submit-btn").addEventListener("click", async () => {
   showError($("setup-error"), "");
-  const voiceMode = $("voice-preset").value === "custom" ? "custom" : "preset";
   const params = {
-    // No UI control for this anymore (duration-based condensing is a
-    // deferred, separate step) - the backend still requires the field, so
-    // this default (state.duration, never mutated now) is sent as a no-op.
+    // Neither of these has a UI control at intake anymore - duration and
+    // voice are chosen later, in Step 3's "Finalize narration" (see the
+    // condense-btn handler below). The backend still requires both fields
+    // at job creation, so these are harmless placeholders overwritten by
+    // POST /jobs/:id/condense once the job reaches ready_for_review.
     targetDurationSeconds: state.duration,
     narrationStyle: $("narration-style").value.trim(),
-    voice: {
-      mode: voiceMode,
-      presetVoiceId: voiceMode === "preset" ? $("voice-preset").value : null,
-      customDescription: voiceMode === "custom" ? $("voice-custom").value.trim() : null,
-    },
+    voice: { mode: "preset", presetVoiceId: "21m00Tcm4TlvDq8ikWAM", customDescription: null },
     transition: {
       type: $("transition-type").value,
       transitionSeconds: Number($("transition-seconds").value),
@@ -240,6 +237,10 @@ async function pollStatus() {
         $("render-status").hidden = true;
         $("render-btn").disabled = false;
         showError($("render-error"), message);
+      } else if (state.pollContext === "condense") {
+        $("condense-status").hidden = true;
+        $("condense-btn").disabled = false;
+        showError($("condense-error"), message);
       } else {
         showError($("progress-error"), message);
       }
@@ -257,6 +258,17 @@ async function pollStatus() {
       return;
     }
 
+    if (state.pollContext === "condense") {
+      if (job.phase === "ready_for_render") {
+        clearInterval(state.pollTimer);
+        $("condense-status").hidden = true;
+        $("condense-btn").disabled = false;
+        showReview(job); // refreshes the segment list with shortened narration + audio, reveals render-group
+      }
+      // still "condensing" - nothing to update, #condense-status already shows the in-progress message
+      return;
+    }
+
     renderStepList(job.step);
     if (job.phase === "ready_for_review" || job.phase === "done") {
       clearInterval(state.pollTimer);
@@ -264,7 +276,9 @@ async function pollStatus() {
       showReview(job);
     }
   } catch (err) {
-    const target = state.pollContext === "render" ? $("render-error") : $("progress-error");
+    const target = state.pollContext === "render" ? $("render-error")
+      : state.pollContext === "condense" ? $("condense-error")
+      : $("progress-error");
     showError(target, `Lost contact with server: ${err.message}`);
   }
 }
@@ -327,10 +341,48 @@ function showReview(job) {
   $("render-transition-seconds").value = job.params.transition.transitionSeconds;
   $("render-min-slide-seconds").value = job.params.transition.minSlideSeconds;
 
+  // condense-group (duration/voice/TTS) only makes sense before that stage
+  // has run; render-group (transition/render) only makes sense once audio
+  // exists to render with.
+  $("condense-group").hidden = job.phase !== "ready_for_review";
+  $("render-group").hidden = !(job.phase === "ready_for_render" || job.phase === "done");
+
   if (job.phase === "done" && job.render && (job.render.outputUrl || job.render.outputPath)) {
     showResult(job);
   }
 }
+
+// ---------- finalize narration (condense + voice + TTS) ----------
+$("condense-btn").addEventListener("click", async () => {
+  showError($("condense-error"), "");
+  $("condense-btn").disabled = true;
+  $("condense-status").hidden = false;
+  $("condense-status").textContent = "Shortening narration and synthesizing voice audio…";
+
+  const voiceMode = $("condense-voice-preset").value === "custom" ? "custom" : "preset";
+  const body = {
+    targetDurationSeconds: Number($("condense-duration").value),
+    voice: {
+      mode: voiceMode,
+      presetVoiceId: voiceMode === "preset" ? $("condense-voice-preset").value : null,
+      customDescription: voiceMode === "custom" ? $("condense-voice-custom").value.trim() : null,
+    },
+  };
+
+  try {
+    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/condense`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error((await res.json()).error || `Server responded ${res.status}`);
+    startPolling("condense");
+  } catch (err) {
+    $("condense-status").hidden = true;
+    $("condense-btn").disabled = false;
+    showError($("condense-error"), `Failed to start: ${err.message}`);
+  }
+});
 
 // ---------- render (Phase 2) ----------
 // The render-trigger webhook acks almost immediately (it backgrounds the
@@ -534,8 +586,20 @@ $("job-picker").addEventListener("change", async () => {
       $("progress-section").hidden = false;
       renderStepList(job.step);
       showError($("progress-error"), job.error ? job.error.message : "Job failed.");
-    } else if (job.phase === "ready_for_review" || job.phase === "done") {
+    } else if (job.phase === "ready_for_review" || job.phase === "ready_for_render" || job.phase === "done") {
       showReview(job);
+    } else if (job.phase === "condensing") {
+      showReview(job);
+      $("condense-btn").disabled = true;
+      $("condense-status").hidden = false;
+      $("condense-status").textContent = "Shortening narration and synthesizing voice audio…";
+      startPolling("condense");
+    } else if (job.phase === "rendering") {
+      showReview(job);
+      $("render-btn").disabled = true;
+      $("render-status").hidden = false;
+      $("render-status").textContent = "Rendering…";
+      startPolling("render");
     } else {
       $("progress-section").hidden = false;
       $("progress-job-id").textContent = jobId;

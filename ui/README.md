@@ -16,17 +16,19 @@ Serve `ui/` as static files any way you like (it's just three files) and open `i
 
 ## Flow
 
-1. **Setup** — drag/drop the `.srt` and PDF(s), mark one PDF primary, set voice/transition (voice isn't used
-   yet - see below), submit. Posts multipart form data: one `params` field (JSON-stringified config) plus
-   `srt` and `pdf_0`/`pdf_1`/… binary fields.
+1. **Setup** — drag/drop the `.srt` and PDF(s), mark one PDF primary, submit (duration/voice aren't chosen
+   here - see step 3). Posts multipart form data: one `params` field (JSON-stringified config) plus `srt`
+   and `pdf_0`/`pdf_1`/… binary fields.
 2. **Progress** — polls status until `phase` is `ready_for_review` or `failed`. Alignment runs against the
    *full* transcript and *full* slide deck (no target duration), then each slide's excerpt is cleaned
    (filler and personal references removed, nothing shortened).
-3. **Review** — one card per slide: slide image, cleaned narration text. No audio yet, and clicking
-   **Render video** currently gets rejected by the backend (`phase is not ready for render`) - duration-based
-   condensing, voice resolution, TTS, and rendering are a separate, not-yet-built later stage. The transition
-   controls and Render button are left in place for that stage rather than removed.
-4. **Result** — (not reachable yet, pending the stage above) inline video preview + download link.
+3. **Review** — one card per slide: slide image, cleaned narration text, a collapsed "show original excerpt"
+   comparison. A **Finalize narration** panel here is where you pick target duration and voice and trigger
+   `POST /jobs/:id/condense` (shortens the narration, resolves the voice, synthesizes audio) - once that
+   reaches `ready_for_render`, the panel below it (transition, output shape/quality, **Render video**)
+   appears. Re-running just the render (different transition/resolution) doesn't redo alignment or voice.
+4. **Result** — inline video preview + download link. "Back to review" returns to step 3 for another
+   transition attempt without re-doing narration or voice.
 
 ## Verified in a real browser, not just read against the code
 

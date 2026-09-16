@@ -81,6 +81,37 @@ def run_prepare_pipeline(job: dict) -> None:
         fail_job(job, job.get("step", "unknown"), f"{type(e).__name__}: {e}", traceback.format_exc())
 
 
+def run_condense_pipeline(job: dict) -> None:
+    """Shortens the already-cleaned narration to job["params"]["targetDurationSeconds"],
+    resolves the chosen voice, and synthesizes audio - the duration/voice/TTS
+    stage deferred out of the automatic prepare flow, now triggered
+    explicitly via POST /jobs/<id>/condense once the job is ready_for_review."""
+    job_dir = os.path.join(config.DATA_DIR, "jobs", job["jobId"])
+
+    try:
+        job["step"] = "condensing_narration"
+        db.save_job(job)
+        pipeline.condense_narration(job)
+        db.save_job(job)
+
+        job["step"] = "resolving_voice"
+        db.save_job(job)
+        pipeline.resolve_voice(job)
+        db.save_job(job)
+
+        job["step"] = "synthesizing_audio"
+        db.save_job(job)
+        audio_dir = os.path.join(job_dir, "audio")
+        pipeline.synthesize_audio(job, audio_dir)
+
+        job["phase"] = "ready_for_render"
+        job["step"] = "ready_for_render"
+        db.save_job(job)
+
+    except Exception as e:
+        fail_job(job, job.get("step", "unknown"), f"{type(e).__name__}: {e}", traceback.format_exc())
+
+
 def run_render(job: dict) -> None:
     """Dispatches a Fargate render task on the first tick a job enters phase
     'rendering', then polls that task's status on every later tick until it
@@ -164,6 +195,8 @@ def main():
     try:
         if job["phase"] == "prepare":
             run_prepare_pipeline(job)
+        elif job["phase"] == "condensing":
+            run_condense_pipeline(job)
         elif job["phase"] == "rendering":
             run_render(job)
     finally:

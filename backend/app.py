@@ -100,6 +100,34 @@ def job_status(job_id):
     return jsonify(job)
 
 
+@app.post("/jobs/<job_id>/condense")
+def trigger_condense(job_id):
+    job = db.get_job(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    if job["phase"] != "ready_for_review":
+        return jsonify({"error": f"job is not ready for condensing (phase={job['phase']})"}), 400
+
+    body = request.get_json(silent=True) or {}
+    target_duration = body.get("targetDurationSeconds")
+    voice = body.get("voice") or {}
+    if not target_duration or not voice.get("mode"):
+        return jsonify({"error": "targetDurationSeconds and voice are required"}), 400
+
+    job["params"]["targetDurationSeconds"] = target_duration
+    job["params"]["voice"] = {
+        "mode": voice["mode"],
+        "presetVoiceId": voice.get("presetVoiceId"),
+        "customDescription": voice.get("customDescription"),
+        "resolvedVoiceId": None,
+    }
+    job["phase"] = "condensing"
+    job["step"] = "condensing_narration"
+    db.save_job(job)
+
+    return jsonify({"jobId": job_id, "phase": job["phase"], "step": job["step"]})
+
+
 @app.post("/jobs/<job_id>/render")
 def trigger_render(job_id):
     job = db.get_job(job_id)
