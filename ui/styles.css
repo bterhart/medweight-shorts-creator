@@ -125,6 +125,17 @@ textarea { min-height: 60px; resize: vertical; }
 .primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .link-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.9rem; text-decoration: underline; padding: 0; }
 
+.secondary-btn {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.secondary-btn:hover { border-color: var(--accent); color: var(--accent); }
+
 .error-text { color: var(--error); font-size: 0.9rem; }
 
 .step-list { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 8px; }

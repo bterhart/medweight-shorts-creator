@@ -13,3 +13,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_phase (phase)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Named narration-style prompts, editable and reusable across jobs instead
+-- of pasting the same text into the UI's textarea every time.
+CREATE TABLE IF NOT EXISTS narration_prompts (
+  id VARCHAR(36) PRIMARY KEY,
+  name VARCHAR(100) NOT NULL UNIQUE,
+  text TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

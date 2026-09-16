@@ -5,6 +5,7 @@ import json
 import os
 from datetime import datetime, timezone
 
+import pymysql
 from flask import Flask, jsonify, request, send_file, abort
 
 import config
@@ -120,6 +121,39 @@ def trigger_render(job_id):
     db.save_job(job)
 
     return jsonify({"jobId": job_id, "phase": job["phase"], "step": job["step"]})
+
+
+@app.get("/prompts")
+def list_prompts():
+    return jsonify(db.list_prompts())
+
+
+@app.post("/prompts")
+def create_prompt():
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    text = body.get("text") or ""
+    if not name or not text:
+        return jsonify({"error": "name and text are required"}), 400
+    try:
+        prompt = db.create_prompt(name, text)
+    except pymysql.err.IntegrityError:
+        return jsonify({"error": f"a prompt named {name!r} already exists"}), 409
+    return jsonify(prompt), 201
+
+
+@app.put("/prompts/<prompt_id>")
+def update_prompt(prompt_id):
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    text = body.get("text") or ""
+    if not name or not text:
+        return jsonify({"error": "name and text are required"}), 400
+    try:
+        db.update_prompt(prompt_id, name, text)
+    except pymysql.err.IntegrityError:
+        return jsonify({"error": f"a prompt named {name!r} already exists"}), 409
+    return jsonify({"id": prompt_id, "name": name, "text": text})
 
 
 @app.get("/files")

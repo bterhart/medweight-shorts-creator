@@ -48,7 +48,15 @@
 
       <div class="field-group">
         <label for="narration-style">Narration style / expertise</label>
-        <input id="narration-style" type="text" placeholder="e.g. plain-language park ranger, or academic hydrology lecture" />
+        <div class="field-row">
+          <select id="prompt-picker">
+            <option value="">Custom (not saved)</option>
+          </select>
+          <button id="prompt-save-btn" class="secondary-btn" type="button">Save</button>
+          <button id="prompt-save-as-btn" class="secondary-btn" type="button">Save as new…</button>
+        </div>
+        <textarea id="narration-style" rows="6" placeholder="e.g. plain-language park ranger, or academic hydrology lecture"></textarea>
+        <p id="prompt-status" class="hint" hidden></p>
       </div>
 
       <div class="field-group">
@@ -99,6 +107,8 @@
     <section id="review-section" class="panel" hidden>
       <h2>3. Review script &amp; slides</h2>
       <p class="hint">Nothing is rendered yet — this is the free part. Re-run just the render below as many times as you like.</p>
+      <button id="back-btn" class="secondary-btn" type="button">&larr; Back to setup</button>
+      <p class="hint">Going back starts a new submission — this won't resume or reuse the job you just prepared.</p>
       <div id="segment-list" class="segment-list"></div>
 
       <div class="field-group">

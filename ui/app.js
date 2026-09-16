@@ -369,5 +369,105 @@ $("render-again-btn").addEventListener("click", () => {
   $("review-section").scrollIntoView({ behavior: "smooth" });
 });
 
+// ---------- back to setup ----------
+// Not non-destructive by design - this abandons the current job entirely
+// rather than trying to preserve/resume it.
+$("back-btn").addEventListener("click", () => {
+  clearInterval(state.pollTimer);
+  state.jobId = null;
+  state.currentJob = null;
+  state.pdfs = [];
+  srtFile = null;
+  $("srt-input").value = "";
+  $("pdf-input").value = "";
+  $("srt-filename").hidden = true;
+  renderPdfList();
+  $("review-section").hidden = true;
+  $("result-section").hidden = true;
+  $("progress-section").hidden = true;
+  $("setup-section").hidden = false;
+  validateSetup();
+  $("setup-section").scrollIntoView({ behavior: "smooth" });
+});
+
+// ---------- narration-style prompt library ----------
+let prompts = [];
+
+async function loadPrompts(selectId) {
+  try {
+    const res = await fetch(`${getApiBase()}/prompts`);
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    prompts = await res.json();
+    const picker = $("prompt-picker");
+    picker.innerHTML = '<option value="">Custom (not saved)</option>';
+    for (const p of prompts) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name;
+      picker.appendChild(opt);
+    }
+    if (selectId) picker.value = selectId;
+  } catch (err) {
+    showError($("prompt-status"), `Failed to load saved prompts: ${err.message}`);
+  }
+}
+
+$("prompt-picker").addEventListener("change", () => {
+  const prompt = prompts.find((p) => p.id === $("prompt-picker").value);
+  $("narration-style").value = prompt ? prompt.text : "";
+  showError($("prompt-status"), "");
+});
+
+$("prompt-save-btn").addEventListener("click", async () => {
+  const id = $("prompt-picker").value;
+  const text = $("narration-style").value.trim();
+  if (!id) {
+    showError($("prompt-status"), 'No saved prompt selected — use "Save as new…" to create one.');
+    return;
+  }
+  if (!text) {
+    showError($("prompt-status"), "Narration style text is empty.");
+    return;
+  }
+  const prompt = prompts.find((p) => p.id === id);
+  try {
+    const res = await fetch(`${getApiBase()}/prompts/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: prompt.name, text }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
+    showError($("prompt-status"), `Saved "${data.name}".`);
+    await loadPrompts(id);
+  } catch (err) {
+    showError($("prompt-status"), `Failed to save: ${err.message}`);
+  }
+});
+
+$("prompt-save-as-btn").addEventListener("click", async () => {
+  const text = $("narration-style").value.trim();
+  if (!text) {
+    showError($("prompt-status"), "Narration style text is empty.");
+    return;
+  }
+  const name = window.prompt("Name for this prompt:");
+  if (!name || !name.trim()) return;
+  try {
+    const res = await fetch(`${getApiBase()}/prompts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim(), text }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
+    showError($("prompt-status"), `Saved "${data.name}".`);
+    await loadPrompts(data.id);
+  } catch (err) {
+    showError($("prompt-status"), `Failed to save: ${err.message}`);
+  }
+});
+
 // initial state
 validateSetup();
+loadPrompts();

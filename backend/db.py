@@ -112,3 +112,48 @@ def release_job(job_id: str) -> None:
 
 def new_job_id() -> str:
     return str(uuid.uuid4())
+
+
+def list_prompts() -> list:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, text, created_at, updated_at FROM narration_prompts ORDER BY name ASC")
+            rows = cur.fetchall()
+        return [
+            {
+                "id": r["id"], "name": r["name"], "text": r["text"],
+                "createdAt": r["created_at"].isoformat(), "updatedAt": r["updated_at"].isoformat(),
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def create_prompt(name: str, text: str) -> dict:
+    prompt_id = str(uuid.uuid4())
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO narration_prompts (id, name, text) VALUES (%s, %s, %s)",
+                (prompt_id, name, text),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": prompt_id, "name": name, "text": text}
+
+
+def update_prompt(prompt_id: str, name: str, text: str) -> None:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE narration_prompts SET name = %s, text = %s WHERE id = %s",
+                (name, text, prompt_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
