@@ -273,12 +273,14 @@ function showReview(job) {
   $("review-section").hidden = false;
   const slidesById = Object.fromEntries(job.slides.map((s) => [s.slideId, s]));
   const audioBySeq = Object.fromEntries(job.audio.map((a) => [a.sequenceIndex, a]));
+  const alignmentBySeq = Object.fromEntries(job.alignment.map((a) => [a.sequenceIndex, a]));
 
   const list = $("segment-list");
   list.innerHTML = "";
   for (const n of [...job.narration].sort((a, b) => a.sequenceIndex - b.sequenceIndex)) {
     const slide = slidesById[n.slideId];
     const audio = audioBySeq[n.sequenceIndex];
+    const alignment = alignmentBySeq[n.sequenceIndex];
 
     const card = document.createElement("div");
     card.className = "segment-card";
@@ -293,6 +295,21 @@ function showReview(job) {
     text.className = "script-text";
     text.textContent = n.script;
     body.appendChild(text);
+
+    // Cleaning (filler/personal-reference removal) is lossy by nature - the
+    // raw excerpt alignment produced is kept untouched precisely so it can
+    // be compared here, not just discarded once cleaning runs.
+    if (alignment) {
+      const details = document.createElement("details");
+      details.className = "raw-excerpt";
+      const summary = document.createElement("summary");
+      summary.textContent = "Show original excerpt (before cleaning)";
+      const raw = document.createElement("div");
+      raw.className = "raw-excerpt-text";
+      raw.textContent = alignment.transcriptExcerpt;
+      details.append(summary, raw);
+      body.appendChild(details);
+    }
 
     if (audio) {
       const audioEl = document.createElement("audio");
