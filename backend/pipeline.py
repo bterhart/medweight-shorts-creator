@@ -256,8 +256,14 @@ def clean_narration(job: dict) -> None:
         timeout=180,
     )
     resp.raise_for_status()
-    content = resp.json()["content"]
-    text = next(block["text"] for block in content if block.get("type") == "text")
+    data = resp.json()
+    content = data["content"]
+    text_block = next((block for block in content if block.get("type") == "text"), None)
+    if text_block is None:
+        raise RuntimeError(
+            f"clean_narration: Claude response had no text block (stop_reason={data.get('stop_reason')})"
+        )
+    text = text_block["text"]
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
@@ -308,12 +314,22 @@ def condense_narration(job: dict) -> None:
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         },
-        json={"model": "claude-sonnet-5", "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}]},
-        timeout=60,
+        # 4096 proved too tight for a real ~65-segment job (confirmed live:
+        # StopIteration from no text block at all in the response, most
+        # likely extended thinking consuming the whole budget before any
+        # output text) - raised to match clean_narration's allowance.
+        json={"model": "claude-sonnet-5", "max_tokens": 16000, "messages": [{"role": "user", "content": prompt}]},
+        timeout=180,
     )
     resp.raise_for_status()
-    content = resp.json()["content"]
-    text = next(block["text"] for block in content if block.get("type") == "text")
+    data = resp.json()
+    content = data["content"]
+    text_block = next((block for block in content if block.get("type") == "text"), None)
+    if text_block is None:
+        raise RuntimeError(
+            f"condense_narration: Claude response had no text block (stop_reason={data.get('stop_reason')})"
+        )
+    text = text_block["text"]
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
