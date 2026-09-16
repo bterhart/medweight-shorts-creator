@@ -44,16 +44,7 @@
         <p class="hint">Mark exactly one deck as <strong>Primary</strong> — the narrative is built from it first; other decks fill in only where the primary deck has no matching slide.</p>
       </div>
 
-      <div class="field-group">
-        <label>Target narration length</label>
-        <div id="duration-control" class="segmented" data-value="90">
-          <button type="button" data-value="45">45s</button>
-          <button type="button" data-value="90">90s</button>
-          <button type="button" data-value="180">3 min</button>
-          <button type="button" data-value="300">5 min</button>
-        </div>
-      </div>
-      <p class="hint">Output shape/resolution is chosen later, at render time — no need to decide it before alignment and narration run.</p>
+      <p class="hint">Alignment runs against the full transcript and full slide deck, then this step cleans each slide's text (removing filler and personal references) - no target narration length to pick here. Shortening to a target duration is a separate, later step.</p>
 
       <div class="field-group">
         <label for="narration-style">Narration style / expertise</label>

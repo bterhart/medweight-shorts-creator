@@ -58,23 +58,17 @@ def run_prepare_pipeline(job: dict) -> None:
         pipeline.run_alignment(job)
         db.save_job(job)
 
-        job["step"] = "condensing_narration"
+        job["step"] = "cleaning_narration"
         db.save_job(job)
-        pipeline.condense_narration(job)
-        db.save_job(job)
+        pipeline.clean_narration(job)
 
-        job["step"] = "resolving_voice"
-        db.save_job(job)
-        pipeline.resolve_voice(job)
-        db.save_job(job)
-
-        job["step"] = "synthesizing_audio"
-        db.save_job(job)
-        audio_dir = os.path.join(job_dir, "audio")
-        pipeline.synthesize_audio(job, audio_dir)
-
-        job["phase"] = "ready_for_render"
-        job["step"] = "ready_for_render"
+        # Duration-based condensing, voice resolution, and audio synthesis
+        # are deferred to a later step that doesn't exist yet (per explicit
+        # direction) - this phase now stops at the human-reviewable
+        # slide+cleaned-text output, same shape as before, just not
+        # duration-boxed and with no audio yet.
+        job["phase"] = "ready_for_review"
+        job["step"] = "ready_for_review"
         db.save_job(job)
 
     except ManusWaiting as e:

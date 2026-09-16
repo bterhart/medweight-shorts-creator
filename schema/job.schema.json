@@ -12,8 +12,8 @@
 
     "phase": {
       "type": "string",
-      "description": "Coarse pipeline phase. 'prepare' covers everything up to and including TTS synthesis (the paid/slow steps). 'ready_for_render' is the dry-run checkpoint. 'rendering'/'done' cover the local, free, repeatable video-assembly step.",
-      "enum": ["prepare", "ready_for_render", "rendering", "done", "failed"]
+      "description": "Coarse pipeline phase. 'prepare' covers alignment against the full transcript/slide deck plus narration cleaning (filler and personal references removed - no duration budget applied). 'ready_for_review' is the human-reviewable slide+text checkpoint this currently stops at. Duration-based condensing, voice resolution, TTS, and rendering are a separate, not-yet-built later stage - 'ready_for_render'/'rendering'/'done' are reserved for it and unreachable automatically right now.",
+      "enum": ["prepare", "ready_for_review", "ready_for_render", "rendering", "done", "failed"]
     },
     "step": {
       "type": "string",
@@ -25,6 +25,8 @@
         "extracting_pdfs",
         "uploading_slides_to_manus",
         "aligning",
+        "cleaning_narration",
+        "ready_for_review",
         "condensing_narration",
         "resolving_voice",
         "synthesizing_audio",
@@ -51,7 +53,7 @@
         "targetDurationSeconds": {
           "type": "integer",
           "enum": [45, 90, 180, 300],
-          "description": "Snap points for 45s / 90s / 3min / 5min. A raw integer is allowed too if the UI later exposes a custom-seconds field."
+          "description": "Snap points for 45s / 90s / 3min / 5min. Still required by the API but currently unused - the UI sends a fixed default; real duration-based condensing is a later, not-yet-built step."
         },
         "narrationStyle": {
           "type": "string",
@@ -163,23 +165,21 @@
 
     "narration": {
       "type": "array",
-      "description": "Condensed per-segment script sized to the target duration. Populated during 'condensing_narration'. This plus 'slides' is the human-reviewable 'script' the dry-run switch stops at.",
+      "description": "Per-segment script cleaned of filler and personal references, at full length - not sized to any target duration (that's a separate, not-yet-built later step). Populated during 'cleaning_narration' from job.alignment's raw excerpts (kept untouched alongside this, so cleaning is never irreversible). This plus 'slides' is the human-reviewable output phase=ready_for_review stops at.",
       "items": {
         "type": "object",
         "required": ["sequenceIndex", "slideId", "script"],
         "properties": {
           "sequenceIndex": { "type": "integer" },
           "slideId": { "type": "string" },
-          "script": { "type": "string" },
-          "estimatedWords": { "type": "integer" },
-          "estimatedSeconds": { "type": "number" }
+          "script": { "type": "string" }
         }
       }
     },
 
     "audio": {
       "type": "array",
-      "description": "One synthesized clip per narration segment, in the same order. Populated during 'synthesizing_audio' / 'probing_durations'. Reaching phase=ready_for_render requires this array to be fully populated with real durations.",
+      "description": "One synthesized clip per narration segment, in the same order. Populated during 'synthesizing_audio' / 'probing_durations' - part of the later duration/voice/render stage, not produced automatically right now. Reaching phase=ready_for_render requires this array to be fully populated with real durations.",
       "items": {
         "type": "object",
         "required": ["sequenceIndex", "path", "durationSeconds"],

@@ -11,11 +11,8 @@ const STEP_ORDER = [
   ["extracting_pdfs", "Extracting slide images"],
   ["uploading_slides_to_manus", "Uploading slides to Manus"],
   ["aligning", "Aligning transcript to slides"],
-  ["condensing_narration", "Writing condensed narration"],
-  ["resolving_voice", "Resolving voice"],
-  ["synthesizing_audio", "Synthesizing narration audio"],
-  ["probing_durations", "Measuring clip durations"],
-  ["ready_for_render", "Ready for review"],
+  ["cleaning_narration", "Cleaning narration text"],
+  ["ready_for_review", "Ready for review"],
 ];
 
 // Resolution is chosen at render time (Phase 2), not at intake - it doesn't
@@ -145,16 +142,6 @@ function renderPdfList() {
   });
 }
 
-// ---------- duration segmented control ----------
-$("duration-control").addEventListener("click", (e) => {
-  const btn = e.target.closest("button[data-value]");
-  if (!btn) return;
-  state.duration = Number(btn.dataset.value);
-  for (const b of $("duration-control").querySelectorAll("button")) b.classList.toggle("selected", b === btn);
-});
-// initialize default selection
-$("duration-control").querySelector('button[data-value="90"]').classList.add("selected");
-
 // ---------- voice preset/custom toggle ----------
 $("voice-preset").addEventListener("change", () => {
   $("voice-custom").hidden = $("voice-preset").value !== "custom";
@@ -172,6 +159,9 @@ $("submit-btn").addEventListener("click", async () => {
   showError($("setup-error"), "");
   const voiceMode = $("voice-preset").value === "custom" ? "custom" : "preset";
   const params = {
+    // No UI control for this anymore (duration-based condensing is a
+    // deferred, separate step) - the backend still requires the field, so
+    // this default (state.duration, never mutated now) is sent as a no-op.
     targetDurationSeconds: state.duration,
     narrationStyle: $("narration-style").value.trim(),
     voice: {
@@ -267,7 +257,7 @@ async function pollStatus() {
     }
 
     renderStepList(job.step);
-    if (job.phase === "ready_for_render" || job.phase === "done") {
+    if (job.phase === "ready_for_review" || job.phase === "done") {
       clearInterval(state.pollTimer);
       $("progress-section").hidden = true;
       showReview(job);

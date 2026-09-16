@@ -168,6 +168,65 @@ def run_alignment(job: dict) -> None:
     ]
 
 
+def clean_narration(job: dict) -> None:
+    """Turns each slide's full aligned transcript excerpt into cleaned
+    narration text - no duration budget applied here (see condense_narration
+    for that, no longer called automatically; see worker.py). Cleaning
+    removes filler and personal references only; it must not shape content
+    for any narration-style modality (CBT/MI/ACT/etc) - that's a distinct,
+    not-yet-built later step. job["alignment"] is left untouched as the
+    original/raw excerpts, so nothing this step does is irreversible."""
+    alignment = job["alignment"]
+    style = job["params"].get("narrationStyle") or "clear, neutral documentary narration"
+    segments = [
+        {"sequence_index": a["sequenceIndex"], "slide_id": a["slideId"], "excerpt": a["transcriptExcerpt"]}
+        for a in alignment
+    ]
+    prompt = (
+        f'Clean each transcript excerpt below into narration matching this style: "{style}".\n'
+        "For each excerpt:\n"
+        "1. Remove filler - text that doesn't help a listener understand what the narration is trying to "
+        "teach, establish, or clarify.\n"
+        "2. Remove personal references - names, addresses, designations, and similar identifying details.\n"
+        "3. Do NOT shape tone or content for any later narration modality (e.g. CBT, MI, ACT) - keep this "
+        "pass style-neutral; that adaptation happens in a separate step.\n"
+        "Keep everything else - this is cleaning, not summarizing or shortening. Preserve full teaching "
+        "content and keep each segment's sentences natural and self-contained (each plays over one static "
+        "image).\n"
+        'Respond with ONLY JSON of the shape {"narration":[{"sequence_index":0,"slide_id":"...","script":"..."}]}.\n\n'
+        f"Segments:\n{json.dumps(segments, indent=2)}"
+    )
+
+    resp = requests.post(
+        f"{config.ANTHROPIC_BASE_URL}/v1/messages",
+        headers={
+            "x-api-key": config.ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        # Unlike condense_narration, output length scales with the source
+        # material (minus filler), not a fixed word budget - a long real
+        # transcript may need this raised further, or split across multiple
+        # calls (deferred - see the chunking follow-up discussed with the
+        # user).
+        json={"model": "claude-sonnet-5", "max_tokens": 16000, "messages": [{"role": "user", "content": prompt}]},
+        timeout=180,
+    )
+    resp.raise_for_status()
+    content = resp.json()["content"]
+    text = next(block["text"] for block in content if block.get("type") == "text")
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        parsed = json.loads(match.group(0)) if match else {"narration": []}
+
+    job["narration"] = [
+        {"sequenceIndex": n["sequence_index"], "slideId": n["slide_id"], "script": n.get("script", "")}
+        for n in parsed.get("narration", [])
+    ]
+
+
 def condense_narration(job: dict) -> None:
     alignment = job["alignment"]
     total_chars = sum(len(a["transcriptExcerpt"]) for a in alignment) or 1

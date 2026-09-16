@@ -104,10 +104,11 @@ Flask app is reachable — e.g. `https://medweight.ca/chatbot-shorts` (no traili
    and start working through it. If it never claims anything, check the cron job actually points at the
    venv's Python and that `backend/.env` has real DB credentials.
 3. Poll `GET /chatbot-shorts/jobs/<id>/status` (or just watch the UI) until `phase` reaches
-   `ready_for_render` or `failed`. A `failed` phase's `error.detail` field has the full Python traceback —
+   `ready_for_review` or `failed`. A `failed` phase's `error.detail` field has the full Python traceback —
    that's the first place to look.
-4. Once `ready_for_render`, trigger a render (UI button, or `POST /chatbot-shorts/jobs/<id>/render`) and
-   watch the next cron tick pick it up the same way.
+4. `ready_for_review` is currently the end of the line - duration-based condensing, voice resolution, TTS,
+   and rendering are a separate, not-yet-built later stage. `POST /chatbot-shorts/jobs/<id>/render` will
+   reject any job that hasn't reached that stage's (not-yet-reachable) `ready_for_render` phase.
 
 ## Before this is anything but a test
 
