@@ -7,6 +7,8 @@ behavior - simpler and safer than per-job-only locking on shared hosting.
 Intended crontab entry (every minute):
   * * * * * /path/to/python3 /path/to/backend/worker.py >> /path/to/worker.log 2>&1
 """
+from __future__ import annotations
+
 import fcntl
 import os
 import sys
