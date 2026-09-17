@@ -27,3 +27,13 @@ from Manus's own docs, not guesses. ElevenLabs and Anthropic calls use standard 
 haven't been verified against real accounts the way Manus has. The full pipeline has been tested end to end
 against a real MySQL database, real PDF extraction, and a mock matching Manus's confirmed API shape — not
 yet against live Manus/ElevenLabs/Anthropic accounts.
+
+## Planned work
+
+- **Custom ElevenLabs voices.** Voice selection is currently limited to a small set of ElevenLabs' preset
+  library voices (see the voice dropdown in `ui/`). Need to support voices we've cloned/created ourselves
+  in ElevenLabs, not just the defaults — likely means accepting an arbitrary voice ID rather than only the
+  presets baked into the UI.
+- **Custom intro/outro clips.** Rendering only assembles the deck's own slides. We already have intro and
+  outro clips produced separately; need a UI toggle (per short, at render time) to prepend/append them to
+  the render, and the corresponding support in `render/render.py` and the Fargate render path.
