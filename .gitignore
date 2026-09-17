@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 backend/.env
 backend/*.lock
+backend/passenger_wsgi.py
+backend/tmp/
+*.log
