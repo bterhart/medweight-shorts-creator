@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 
 import pymupdf
 import requests
@@ -447,7 +448,12 @@ def synthesize_audio(short: dict, audio_dir: str, sequence_indexes: set | None =
         )
         resp.raise_for_status()
         seq = n["sequenceIndex"]
-        path = os.path.join(audio_dir, f"seg-{seq:03d}.mp3")
+        # A uuid suffix, not just seq, because sequenceIndex is reassigned
+        # by reindex_short() on every segment insert/delete after review -
+        # reusing "seg-{seq}.mp3" as a bare filename let an unrelated
+        # segment's later resynthesis silently overwrite an earlier
+        # segment's audio file once their positions happened to coincide.
+        path = os.path.join(audio_dir, f"seg-{seq:03d}-{uuid.uuid4().hex[:8]}.mp3")
         with open(path, "wb") as f:
             f.write(resp.content)
 

@@ -3,6 +3,10 @@
 //   GET  {apiBase}/jobs/:jobId/status                    poll job status
 //   POST {apiBase}/jobs/:jobId/shorts                    create a short from the job's permanent narration
 //   POST {apiBase}/jobs/:jobId/shorts/:shortId/render    trigger that short's render
+//   PATCH  {apiBase}/jobs/:jobId/shorts/:shortId/segments/:seq        rewrite one segment's text (resynthesizes it)
+//   POST   {apiBase}/jobs/:jobId/shorts/:shortId/segments/:seq/image  replace one segment's image (upload or deck slide)
+//   DELETE {apiBase}/jobs/:jobId/shorts/:shortId/segments/:seq        remove one segment
+//   POST   {apiBase}/jobs/:jobId/shorts/:shortId/segments             insert a new segment
 //   GET  {apiBase}/files?path=...                        slide images/audio
 
 const STEP_ORDER = [

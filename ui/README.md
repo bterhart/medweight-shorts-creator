@@ -8,6 +8,13 @@ webhooks, see `archive/README.md` for why that changed):
 - `POST {apiBase}/jobs/:jobId/shorts` — create a short (condenses the job's permanent narration to a
   target duration/topic, resolves voice, synthesizes audio)
 - `POST {apiBase}/jobs/:jobId/shorts/:shortId/render` — render trigger, scoped to one short
+- `PATCH {apiBase}/jobs/:jobId/shorts/:shortId/segments/:seq` — rewrite one segment's narration text
+  (queues just that segment for resynthesis via the short's `editing` phase)
+- `POST {apiBase}/jobs/:jobId/shorts/:shortId/segments/:seq/image` — replace one segment's image: an
+  `image` upload (need not come from the deck), or a `sourceSlideId` from the job's full deck
+- `DELETE {apiBase}/jobs/:jobId/shorts/:shortId/segments/:seq` — remove one segment
+- `POST {apiBase}/jobs/:jobId/shorts/:shortId/segments` — insert a new segment (`script`, `image`,
+  optional `position`)
 - `GET {apiBase}/files?path=...` — slide images and narration audio
 
 ## Running it
@@ -33,8 +40,12 @@ Serve `ui/` as static files any way you like (it's just three files) and open `i
    it back onto whichever original slides it actually covers - often a subset, sometimes just a few slides
    out of a large deck. Once a short reaches `ready_for_render`, its card gets its own transition/output
    controls and **Render video** button; the rendered video and download link appear inline on that short's
-   card once done. Only one short per job can be mid-pipeline (condensing or rendering) at a time - creating
-   or rendering another while one is in flight gets a 409 until it finishes.
+   card once done. From that point each segment on the card is editable: rewrite its narration text (**Save
+   text** — resynthesizes just that segment's audio, nothing else), swap its image (a deck-slide picker or
+   **Upload image…**), **Delete slide**, or use the **Add a slide** form to insert a new segment (text + image)
+   at any position. A previously rendered preview stays visible after an edit, flagged as stale, until you
+   render again. Only one short per job can be mid-pipeline (condensing, editing, or rendering) at a time -
+   creating, editing, or rendering another while one is in flight gets a 409 until it finishes.
 
 ## Verified in a real browser, not just read against the code
 

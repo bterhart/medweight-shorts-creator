@@ -26,10 +26,17 @@ python render/render.py <jobId> --data-dir data --transition-type wipe --transit
 ```
 
 Options: `--transition-type {cut,fade,crossfade,wipe,slide}`, `--transition-seconds`,
-`--min-slide-seconds`, `--resolution WxH`, `--fps`.
+`--min-slide-seconds`, `--resolution WxH`, `--fps`, `--intro-path`/`--outro-path` (fixed clips to
+prepend/append, letterboxed to the target resolution, keeping their own audio).
 
 Output goes to `data/jobs/<jobId>/output/video-NN.mp4` (`NN` increments on every render — old renders
 are kept, not overwritten).
+
+In production the same `render()` function runs inside the Fargate container (`ecs_task.py`) against a
+per-short render view that `backend/fargate_client.py` uploads to S3 — shaped like the job-level input
+above (`slides`/`narration`/`audio`/`params`), where `narration` is that short's `script`. A segment may
+carry a `customImagePath` (its image was replaced with an upload, or it was added post-review); when set,
+`build_segments` uses it instead of resolving `slideId` against `slides`.
 
 ## How the transitions work
 
