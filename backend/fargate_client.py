@@ -76,6 +76,14 @@ def dispatch_render(job: dict, short: dict, render_count: int) -> str:
         if path and os.path.isfile(path):
             s3.upload_file(path, config.RENDER_S3_BUCKET, f"{prefix}/audio/{os.path.basename(path)}")
 
+    # A segment whose image was replaced or added post-review points at a
+    # file under this short's own custom-slides/ dir, never one of
+    # job["slides"]'s own images - upload those too, under their own prefix.
+    for n in short.get("script", []):
+        path = n.get("customImagePath")
+        if path and os.path.isfile(path):
+            s3.upload_file(path, config.RENDER_S3_BUCKET, f"{prefix}/custom-slides/{os.path.basename(path)}")
+
     overrides = short.get("render", {}).get("pendingOverrides") or {}
     if overrides.get("includeIntro"):
         _upload_shared_asset(s3, "intro.mp4", INTRO_ASSET_KEY)

@@ -12,8 +12,8 @@
 
     "phase": {
       "type": "string",
-      "description": "Coarse pipeline phase. 'prepare' covers alignment against the full transcript/slide deck plus narration cleaning (filler and personal references removed - no duration budget applied, never touched again after this). 'ready_for_review' is both the human-reviewable slide+text checkpoint prepare stops at AND the job's permanent resting state afterward - a job can sit here indefinitely, spawning any number of 'shorts' (see below). 'condensing'/'rendering' mean whichever short is named by activeShortId is currently mid-pipeline; the job always returns to 'ready_for_review' once that short finishes or fails, regardless of the short's own outcome. 'ready_for_render'/'done' are legacy values from before shorts existed (a job itself is never rendered directly anymore) and are only expected on jobs created before this change.",
-      "enum": ["prepare", "ready_for_review", "condensing", "ready_for_render", "rendering", "done", "failed"]
+      "description": "Coarse pipeline phase. 'prepare' covers alignment against the full transcript/slide deck plus narration cleaning (filler and personal references removed - no duration budget applied, never touched again after this). 'ready_for_review' is both the human-reviewable slide+text checkpoint prepare stops at AND the job's permanent resting state afterward - a job can sit here indefinitely, spawning any number of 'shorts' (see below). 'condensing'/'editing'/'rendering' mean whichever short is named by activeShortId is currently mid-pipeline; the job always returns to 'ready_for_review' once that short finishes or fails, regardless of the short's own outcome. 'ready_for_render'/'done' are legacy values from before shorts existed (a job itself is never rendered directly anymore) and are only expected on jobs created before this change.",
+      "enum": ["prepare", "ready_for_review", "condensing", "editing", "ready_for_render", "rendering", "done", "failed"]
     },
     "activeShortId": {
       "type": ["string", "null"],
@@ -34,6 +34,7 @@
         "condensing_narration",
         "resolving_voice",
         "synthesizing_audio",
+        "resynthesizing_audio",
         "probing_durations",
         "ready_for_render",
         "rendering",
@@ -183,26 +184,38 @@
           },
           "phase": {
             "type": "string",
-            "enum": ["condensing", "ready_for_render", "rendering", "done", "failed"],
-            "description": "This short's own state machine, independent of every other short on the job and of job.phase itself."
+            "enum": ["condensing", "editing", "ready_for_render", "rendering", "done", "failed"],
+            "description": "This short's own state machine, independent of every other short on the job and of job.phase itself. 'editing' means a post-review text edit or a newly added segment is waiting on the next cron tick to (re)synthesize its audio (see pendingSegments) - every other segment's audio is untouched."
           },
           "step": { "type": "string" },
           "error": {
             "type": ["object", "null"],
             "properties": { "step": { "type": "string" }, "message": { "type": "string" }, "detail": { "type": "string" } }
           },
+          "pendingSegments": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "Transient - sequenceIndex values in script[] awaiting (re)synthesis, set by a text edit or a new segment and consumed by worker.run_edit_pipeline. Empty/absent outside phase='editing'."
+          },
           "script": {
             "type": "array",
-            "description": "Populated by pipeline.build_short() from the full job.narration pool - one coherent narrative Claude wrote to the target word budget, broken into segments each grounded in an original slideId (a subset of job.narration's slides; several may be merged under one, most may be dropped). Every slideId here is guaranteed to exist in job.narration.",
+            "description": "Populated by pipeline.build_short() from the full job.narration pool - one coherent narrative Claude wrote to the target word budget, broken into segments each grounded in an original slideId (a subset of job.narration's slides; several may be merged under one, most may be dropped). Every slideId here is guaranteed to exist in job.narration. Editable after review: sequenceIndex stays contiguous (0..N-1) across edits/deletes/inserts.",
             "items": {
               "type": "object",
               "required": ["sequenceIndex", "slideId", "script"],
               "properties": {
                 "sequenceIndex": { "type": "integer" },
-                "slideId": { "type": "string" },
+                "slideId": {
+                  "type": ["string", "null"],
+                  "description": "Which job.slides entry this segment is nominally grounded in. Null for a segment added post-review with no corresponding original slide. Ignored for rendering when customImagePath is set, but kept for lineage."
+                },
                 "script": { "type": "string" },
                 "estimatedWords": { "type": "integer" },
-                "estimatedSeconds": { "type": "number" }
+                "estimatedSeconds": { "type": "number" },
+                "customImagePath": {
+                  "type": ["string", "null"],
+                  "description": "Set when this segment's image was replaced with an upload (not one of job.slides' own images) or added post-review. Takes priority over resolving slideId for rendering. Null means use job.slides[slideId]'s image as normal."
+                }
               }
             }
           },

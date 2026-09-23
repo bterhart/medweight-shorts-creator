@@ -34,13 +34,20 @@ The actual pipeline runs in `backend/worker.py`, meant to be invoked by cron eve
 
 Each invocation: acquire an exclusive file lock (so overlapping cron ticks can't run two workers at once —
 simpler and safer on shared hosting than trying to bound per-job concurrency), atomically claim one job
-that still needs work (`phase IN ('prepare', 'condensing', 'rendering')`, skipping anything another worker
-already holds a lease on), process it fully — which can take minutes, that's fine, cron doesn't need it to
-finish before the next tick, the lock just makes the next tick a no-op until this one's done — then exit.
-Neither `POST /jobs/<id>/shorts` nor `POST /jobs/<id>/shorts/<shortId>/render` does the actual work inline;
-each just writes the request onto the named short (in `job.shorts`, with `job.activeShortId` pointing at
-it) and flips `job.phase` to `condensing`/`rendering`, and the same worker loop picks it up next. Only one
-short per job may be mid-pipeline at a time - `job.activeShortId` enforces that at the API layer.
+that still needs work (`phase IN ('prepare', 'condensing', 'editing', 'rendering')`, skipping anything
+another worker already holds a lease on), process it fully — which can take minutes, that's fine, cron
+doesn't need it to finish before the next tick, the lock just makes the next tick a no-op until this one's
+done — then exit. Neither `POST /jobs/<id>/shorts` nor `POST /jobs/<id>/shorts/<shortId>/render` does the
+actual work inline; each just writes the request onto the named short (in `job.shorts`, with
+`job.activeShortId` pointing at it) and flips `job.phase` to `condensing`/`rendering`, and the same worker
+loop picks it up next. Only one short per job may be mid-pipeline at a time - `job.activeShortId` enforces
+that at the API layer. The same pattern covers post-review segment edits that need ElevenLabs: `PATCH
+.../segments/<seq>` (rewrite narration text) and `POST .../segments` (insert a new segment) both write
+directly to `short.script`/`short.pendingSegments` and flip `job.phase` to `editing`, which
+`worker.run_edit_pipeline` picks up and resolves back to `ready_for_review` - resynthesizing only the
+segment(s) named in `pendingSegments`, never the whole short. Segment edits with no audio impact - `POST
+.../segments/<seq>/image` (replace, from an upload or another deck slide) and `DELETE .../segments/<seq>` -
+apply synchronously instead, the same fast/sync category as job creation and status polling.
 
 ## Pipeline steps (`backend/pipeline.py`)
 

@@ -139,6 +139,36 @@ def run_condense_pipeline(job: dict) -> None:
         fail_short(job, short, short.get("step", "unknown"), f"{type(e).__name__}: {e}", traceback.format_exc())
 
 
+def run_edit_pipeline(job: dict) -> None:
+    """(Re)synthesizes audio for whichever segments short["pendingSegments"]
+    names - a post-review text edit or a newly added segment - triggered
+    explicitly via PATCH/POST on a segment. Never touches any other
+    segment's audio, script text, or image. The job always returns to
+    ready_for_review once this finishes or fails, same as condensing."""
+    short = _active_short(job)
+    if short is None:
+        fail_job(job, "resynthesizing_audio", "activeShortId does not match any short in job.shorts")
+        return
+
+    job_dir = os.path.join(config.DATA_DIR, "jobs", job["jobId"])
+    try:
+        short["step"] = "resynthesizing_audio"
+        db.save_job(job)
+        audio_dir = os.path.join(job_dir, "audio", short["shortId"])
+        pending = set(short.pop("pendingSegments", []) or [])
+        pipeline.synthesize_audio(short, audio_dir, sequence_indexes=pending)
+
+        short["phase"] = "ready_for_render"
+        short["step"] = "ready_for_render"
+        job["activeShortId"] = None
+        job["phase"] = "ready_for_review"
+        job["step"] = "ready_for_review"
+        db.save_job(job)
+
+    except Exception as e:
+        fail_short(job, short, short.get("step", "unknown"), f"{type(e).__name__}: {e}", traceback.format_exc())
+
+
 def run_render(job: dict, short: dict) -> None:
     """Dispatches a Fargate render task on the first tick this short enters
     phase 'rendering', then polls that task's status on every later tick
@@ -228,6 +258,8 @@ def main():
             run_prepare_pipeline(job)
         elif job["phase"] == "condensing":
             run_condense_pipeline(job)
+        elif job["phase"] == "editing":
+            run_edit_pipeline(job)
         elif job["phase"] == "rendering":
             short = _active_short(job)
             if short is None:

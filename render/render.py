@@ -100,12 +100,15 @@ def build_segments(job):
     segments = []
     for n in sorted(job["narration"], key=lambda x: x["sequenceIndex"]):
         seq = n["sequenceIndex"]
-        slide = slides_by_id[n["slideId"]]
+        # A post-review image swap or an added segment carries its own
+        # customImagePath, which is never one of job.slides' own images -
+        # only fall back to resolving slideId when there isn't one.
+        image_path = n.get("customImagePath") or slides_by_id[n["slideId"]]["imagePath"]
         audio = audio_by_seq.get(seq)
         audio_dur = audio["durationSeconds"] if audio else min_slide
         segments.append({
             "sequenceIndex": seq,
-            "imagePath": slide["imagePath"],
+            "imagePath": image_path,
             "audioPath": audio["path"] if audio else None,
             "duration": max(audio_dur, min_slide),
         })

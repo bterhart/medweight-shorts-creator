@@ -231,7 +231,7 @@ async function pollStatus() {
       // here would mean prepare itself broke, which shouldn't happen this
       // late, but is handled the same way either way: stop polling, show
       // whatever the server has.
-      if (job.phase === "condensing" || job.phase === "rendering") {
+      if (job.phase === "condensing" || job.phase === "editing" || job.phase === "rendering") {
         showReview(job); // refresh status badges in place
         return;
       }
@@ -333,6 +333,228 @@ function buildCheckboxField(id, labelText) {
   return { wrapper, input };
 }
 
+function segmentImagePath(n, slidesById) {
+  if (n.customImagePath) return n.customImagePath;
+  const slide = slidesById[n.slideId];
+  return slide ? slide.imagePath : null;
+}
+
+function buildEditableSegment(job, short, n, slidesById, editable) {
+  const seg = document.createElement("div");
+  seg.className = "segment-card";
+
+  const imagePath = segmentImagePath(n, slidesById);
+  const img = document.createElement("img");
+  if (imagePath) img.src = fileUrl(imagePath);
+  img.alt = n.slideId || "custom slide";
+
+  const body = document.createElement("div");
+  body.className = "segment-body";
+
+  const errorEl = document.createElement("p");
+  errorEl.className = "error-text";
+  errorEl.hidden = true;
+
+  if (editable) {
+    const textArea = document.createElement("textarea");
+    textArea.className = "script-text-edit";
+    textArea.rows = 3;
+    textArea.value = n.script;
+    body.appendChild(textArea);
+
+    const actions = document.createElement("div");
+    actions.className = "field-row segment-actions";
+
+    const saveTextBtn = document.createElement("button");
+    saveTextBtn.type = "button";
+    saveTextBtn.className = "secondary-btn";
+    saveTextBtn.textContent = "Save text";
+    saveTextBtn.addEventListener("click", () => {
+      const text = textArea.value.trim();
+      if (!text) { showError(errorEl, "Narration text can't be empty."); return; }
+      if (text === n.script) return;
+      saveSegmentText(short.shortId, n.sequenceIndex, text, errorEl);
+    });
+
+    const deckPicker = document.createElement("select");
+    const noneOpt = document.createElement("option");
+    noneOpt.value = "";
+    noneOpt.textContent = "Replace with a deck slide…";
+    deckPicker.appendChild(noneOpt);
+    for (const s of job.slides || []) {
+      const opt = document.createElement("option");
+      opt.value = s.slideId;
+      opt.textContent = `${s.pdfId} p.${s.pageNumber}`;
+      deckPicker.appendChild(opt);
+    }
+    deckPicker.addEventListener("change", () => {
+      if (!deckPicker.value) return;
+      replaceSegmentImage(short.shortId, n.sequenceIndex, { sourceSlideId: deckPicker.value }, errorEl);
+      deckPicker.value = "";
+    });
+
+    const uploadLabel = document.createElement("label");
+    uploadLabel.className = "secondary-btn file-upload-btn";
+    uploadLabel.textContent = "Upload image…";
+    const uploadInput = document.createElement("input");
+    uploadInput.type = "file";
+    uploadInput.accept = "image/png,image/jpeg,image/webp";
+    uploadInput.hidden = true;
+    uploadInput.addEventListener("change", () => {
+      if (!uploadInput.files.length) return;
+      replaceSegmentImage(short.shortId, n.sequenceIndex, { file: uploadInput.files[0] }, errorEl);
+      uploadInput.value = "";
+    });
+    uploadLabel.appendChild(uploadInput);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "secondary-btn";
+    deleteBtn.textContent = "Delete slide";
+    deleteBtn.addEventListener("click", () => {
+      if (!window.confirm("Delete this slide from the short?")) return;
+      deleteSegment(short.shortId, n.sequenceIndex, errorEl);
+    });
+
+    actions.append(saveTextBtn, deckPicker, uploadLabel, deleteBtn);
+    body.appendChild(actions);
+  } else {
+    const text = document.createElement("div");
+    text.className = "script-text";
+    text.textContent = n.script;
+    body.appendChild(text);
+  }
+
+  const audio = (short.audio || []).find((a) => a.sequenceIndex === n.sequenceIndex);
+  if (audio) {
+    const audioEl = document.createElement("audio");
+    audioEl.controls = true;
+    audioEl.src = fileUrl(audio.path);
+    body.appendChild(audioEl);
+  }
+
+  body.appendChild(errorEl);
+  seg.append(img, body);
+  return seg;
+}
+
+function buildAddSegmentForm(short) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "field-group add-segment-form";
+
+  const label = document.createElement("label");
+  label.textContent = "Add a slide";
+  wrapper.appendChild(label);
+
+  const position = document.createElement("select");
+  const count = short.script.length;
+  for (let i = 0; i <= count; i++) {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = i === count ? "At the end" : `Before slide ${i + 1}`;
+    if (i === count) opt.selected = true;
+    position.appendChild(opt);
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.rows = 2;
+  textArea.placeholder = "Narration for the new slide";
+
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "image/png,image/jpeg,image/webp";
+
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "secondary-btn";
+  addBtn.textContent = "Add slide";
+
+  const errorEl = document.createElement("p");
+  errorEl.className = "error-text";
+  errorEl.hidden = true;
+
+  addBtn.addEventListener("click", () => {
+    const text = textArea.value.trim();
+    if (!text) { showError(errorEl, "Narration text is required."); return; }
+    if (!fileInput.files.length) { showError(errorEl, "An image is required."); return; }
+    addSegment(short.shortId, Number(position.value), text, fileInput.files[0], errorEl);
+  });
+
+  const row = document.createElement("div");
+  row.className = "field-row";
+  row.append(position, addBtn);
+
+  wrapper.append(textArea, fileInput, row, errorEl);
+  return wrapper;
+}
+
+async function saveSegmentText(shortId, seq, text, errorEl) {
+  showError(errorEl, "");
+  try {
+    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/shorts/${shortId}/segments/${seq}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ script: text }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
+    startPolling("shorts");
+  } catch (err) {
+    showError(errorEl, `Failed to save text: ${err.message}`);
+  }
+}
+
+async function replaceSegmentImage(shortId, seq, { file, sourceSlideId }, errorEl) {
+  showError(errorEl, "");
+  const form = new FormData();
+  if (file) form.append("image", file, file.name);
+  if (sourceSlideId) form.append("sourceSlideId", sourceSlideId);
+  try {
+    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/shorts/${shortId}/segments/${seq}/image`, {
+      method: "POST",
+      body: form,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
+    startPolling("shorts");
+  } catch (err) {
+    showError(errorEl, `Failed to replace image: ${err.message}`);
+  }
+}
+
+async function deleteSegment(shortId, seq, errorEl) {
+  showError(errorEl, "");
+  try {
+    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/shorts/${shortId}/segments/${seq}`, {
+      method: "DELETE",
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
+    startPolling("shorts");
+  } catch (err) {
+    showError(errorEl, `Failed to delete slide: ${err.message}`);
+  }
+}
+
+async function addSegment(shortId, position, text, file, errorEl) {
+  showError(errorEl, "");
+  const form = new FormData();
+  form.append("script", text);
+  form.append("position", String(position));
+  form.append("image", file, file.name);
+  try {
+    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/shorts/${shortId}/segments`, {
+      method: "POST",
+      body: form,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
+    startPolling("shorts");
+  } catch (err) {
+    showError(errorEl, `Failed to add slide: ${err.message}`);
+  }
+}
+
 function buildShortCard(job, short, slidesById) {
   const card = document.createElement("div");
   card.className = "short-card";
@@ -357,33 +579,38 @@ function buildShortCard(job, short, slidesById) {
     return card;
   }
 
-  // ready_for_render / rendering / done - the script (and usually audio) exist
-  for (const n of [...short.script].sort((a, b) => a.sequenceIndex - b.sequenceIndex)) {
-    const slide = slidesById[n.slideId];
-    const audio = (short.audio || []).find((a) => a.sequenceIndex === n.sequenceIndex);
-
-    const seg = document.createElement("div");
-    seg.className = "segment-card";
-    const img = document.createElement("img");
-    img.src = fileUrl(slide.imagePath);
-    img.alt = n.slideId;
-    const body = document.createElement("div");
-    body.className = "segment-body";
-    const text = document.createElement("div");
-    text.className = "script-text";
-    text.textContent = n.script;
-    body.appendChild(text);
-    if (audio) {
-      const audioEl = document.createElement("audio");
-      audioEl.controls = true;
-      audioEl.src = fileUrl(audio.path);
-      body.appendChild(audioEl);
-    }
-    seg.append(img, body);
-    card.appendChild(seg);
+  if (short.phase === "editing") {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "Applying your edit — resynthesizing narration…";
+    card.appendChild(p);
+    return card;
   }
 
-  if (short.phase === "done" && short.render && short.render.outputUrl) {
+  // ready_for_render / rendering / done - the script (and usually audio)
+  // exist. Editable once the pipeline isn't mid-flight for THIS short and no
+  // other short on the job is active either - same window the render button
+  // below is already enabled in.
+  const editable = (short.phase === "ready_for_render" || short.phase === "done") && !job.activeShortId;
+  for (const n of [...short.script].sort((a, b) => a.sequenceIndex - b.sequenceIndex)) {
+    card.appendChild(buildEditableSegment(job, short, n, slidesById, editable));
+  }
+
+  if (editable) {
+    card.appendChild(buildAddSegmentForm(short));
+  }
+
+  if (short.render && short.render.outputUrl) {
+    // Kept visible even after phase drops back to ready_for_render (a
+    // post-review edit) - it's the last real render, still valid to watch
+    // or download, just possibly stale until the next render picks up the
+    // edit.
+    if (short.phase !== "done") {
+      const stale = document.createElement("p");
+      stale.className = "hint";
+      stale.textContent = "This preview was rendered before your latest edit — render again to update it.";
+      card.appendChild(stale);
+    }
     const video = document.createElement("video");
     video.controls = true;
     video.src = short.render.outputUrl;
@@ -664,7 +891,7 @@ $("job-picker").addEventListener("change", async () => {
       $("progress-section").hidden = false;
       renderStepList(job.step);
       showError($("progress-error"), job.error ? job.error.message : "Job failed.");
-    } else if (job.phase === "condensing" || job.phase === "rendering") {
+    } else if (job.phase === "condensing" || job.phase === "editing" || job.phase === "rendering") {
       // a short is mid-pipeline; job.phase always returns to ready_for_review
       // once it finishes or fails (see worker.fail_short/run_render)
       showReview(job);

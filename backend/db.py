@@ -68,17 +68,17 @@ def save_job(job: dict) -> None:
 
 
 def claim_next_job(lease_minutes: int = 10) -> dict | None:
-    """Atomically claim one job that still needs work (phase 'prepare' or
-    'rendering'), skipping anything locked by another worker within the
-    lease window. Returns the job dict, already locked, or None if nothing
-    needs doing right now."""
+    """Atomically claim one job that still needs work (phase 'prepare',
+    'condensing', 'editing', or 'rendering'), skipping anything locked by
+    another worker within the lease window. Returns the job dict, already
+    locked, or None if nothing needs doing right now."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id FROM jobs
-                WHERE phase IN ('prepare', 'condensing', 'rendering')
+                WHERE phase IN ('prepare', 'condensing', 'editing', 'rendering')
                   AND (locked_at IS NULL OR locked_at < UTC_TIMESTAMP() - INTERVAL %s MINUTE)
                 ORDER BY created_at ASC
                 LIMIT 1

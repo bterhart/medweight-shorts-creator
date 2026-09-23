@@ -37,6 +37,14 @@ yet against live Manus/ElevenLabs/Anthropic accounts.
 
 ## Recently added
 
+- **Post-render slide editing.** Once a short has a script+audio (`ready_for_render` or `done`), each
+  segment can be edited from the review UI: rewrite its narration text (queues just that segment for
+  ElevenLabs resynthesis via a new short phase, `editing` — every other segment's audio is untouched),
+  replace its image (either an upload, which need not come from the original deck, or a different slide
+  picked from the full deck), delete it, or insert a brand-new segment (text + a required uploaded image)
+  at any position. Deleting/inserting keeps `sequenceIndex` contiguous across `script[]` and `audio[]`. A
+  previously rendered preview stays visible/downloadable after an edit (flagged as stale) rather than being
+  hidden or auto-re-rendered — re-rendering is still an explicit action.
 - **Custom intro/outro clips.** Each short's render controls now have "Include intro"/"Include outro"
   toggles. The clips themselves (`intro.mp4`, `outro.mp4`) are fixed, non-job-specific files that must be
   placed at `data/assets/intro.mp4` and `data/assets/outro.mp4` on the cPanel host (see

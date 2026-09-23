@@ -138,6 +138,15 @@ textarea { min-height: 60px; resize: vertical; }
   cursor: pointer;
 }
 .secondary-btn:hover { border-color: var(--accent); color: var(--accent); }
+.secondary-btn { display: inline-block; }
+.file-upload-btn { cursor: pointer; }
+
+.segment-actions { align-items: center; }
+.add-segment-form {
+  border-top: 1px dashed var(--border);
+  padding-top: 12px;
+  margin-top: 4px;
+}
 
 .error-text { color: var(--error); font-size: 0.9rem; }
 

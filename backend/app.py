@@ -1,6 +1,8 @@
 """Flask app for the job pipeline and its shorts: POST /jobs, GET
 /jobs/<id>/status, POST /jobs/<id>/shorts, POST /jobs/<id>/shorts/<shortId>/render,
 GET /files, plus the narration-prompts library."""
+from __future__ import annotations
+
 import json
 import os
 import uuid
@@ -11,8 +13,11 @@ from flask import Flask, jsonify, request, send_file, abort
 
 import config
 import db
+import pipeline
 
 app = Flask(__name__)
+
+ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def now_iso():
@@ -21,6 +26,22 @@ def now_iso():
 
 def job_dir(job_id: str) -> str:
     return os.path.join(config.DATA_DIR, "jobs", job_id)
+
+
+def _find_short(job: dict, short_id: str) -> dict | None:
+    return next((s for s in job.get("shorts", []) if s["shortId"] == short_id), None)
+
+
+def _check_short_editable(job: dict, short: dict):
+    """Segment edits (text, image, delete, add) are allowed once a short has
+    a script+audio to edit and aren't themselves mid-pipeline - same
+    ready_for_render/done window the review UI already shows the segment
+    list for. Returns a Flask error response, or None if editing may proceed."""
+    if short["phase"] not in ("ready_for_render", "done"):
+        return jsonify({"error": f"short is not editable (phase={short['phase']})"}), 400
+    if job.get("activeShortId"):
+        return jsonify({"error": "another short is currently processing for this job - try again once it finishes"}), 409
+    return None
 
 
 @app.post("/jobs")
@@ -174,6 +195,181 @@ def trigger_short_render(job_id, short_id):
     job["activeShortId"] = short_id
     job["phase"] = "rendering"
     job["step"] = "rendering"
+    db.save_job(job)
+
+    return jsonify({"jobId": job_id, "shortId": short_id, "phase": job["phase"], "step": job["step"]})
+
+
+@app.patch("/jobs/<job_id>/shorts/<short_id>/segments/<int:seq>")
+def edit_segment_text(job_id, short_id, seq):
+    """Rewrites one segment's narration text - queues just that segment for
+    resynthesis (phase='editing') rather than touching any other segment's
+    audio. Only available once a short has a script+audio to edit."""
+    job = db.get_job(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    short = _find_short(job, short_id)
+    if not short:
+        return jsonify({"error": "short not found"}), 404
+    err = _check_short_editable(job, short)
+    if err:
+        return err
+    segment = next((n for n in short["script"] if n["sequenceIndex"] == seq), None)
+    if not segment:
+        return jsonify({"error": "segment not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    text = (body.get("script") or "").strip()
+    if not text:
+        return jsonify({"error": "script is required"}), 400
+
+    segment["script"] = text
+    words = len(text.split())
+    segment["estimatedWords"] = words
+    segment["estimatedSeconds"] = round((words / pipeline.WORDS_PER_MINUTE) * 60)
+
+    short["pendingSegments"] = [seq]
+    short["phase"] = "editing"
+    short["step"] = "resynthesizing_audio"
+    job["activeShortId"] = short_id
+    job["phase"] = "editing"
+    job["step"] = "resynthesizing_audio"
+    db.save_job(job)
+
+    return jsonify({"jobId": job_id, "shortId": short_id, "phase": job["phase"], "step": job["step"]})
+
+
+@app.post("/jobs/<job_id>/shorts/<short_id>/segments/<int:seq>/image")
+def replace_segment_image(job_id, short_id, seq):
+    """Replaces one segment's image, either with an uploaded file (an
+    'image' form file - need not be one of the deck's own slides) or by
+    pointing it at a different slide from the job's full original deck (a
+    'sourceSlideId' form field). No audio impact, so this applies
+    immediately rather than going through the editing phase."""
+    job = db.get_job(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    short = _find_short(job, short_id)
+    if not short:
+        return jsonify({"error": "short not found"}), 404
+    err = _check_short_editable(job, short)
+    if err:
+        return err
+    segment = next((n for n in short["script"] if n["sequenceIndex"] == seq), None)
+    if not segment:
+        return jsonify({"error": "segment not found"}), 404
+
+    upload = request.files.get("image")
+    source_slide_id = request.form.get("sourceSlideId")
+
+    if upload:
+        ext = os.path.splitext(upload.filename or "")[1].lower()
+        if ext not in ALLOWED_IMAGE_EXTENSIONS:
+            return jsonify({"error": f"unsupported image type {ext!r} - use png, jpg, or webp"}), 400
+        custom_dir = os.path.join(job_dir(job_id), "shorts", short_id, "custom-slides")
+        os.makedirs(custom_dir, exist_ok=True)
+        path = os.path.join(custom_dir, f"seg-{seq:03d}-{uuid.uuid4().hex[:8]}{ext}")
+        upload.save(path)
+        segment["customImagePath"] = path
+    elif source_slide_id:
+        if not any(s["slideId"] == source_slide_id for s in job.get("slides", [])):
+            return jsonify({"error": f"no slide {source_slide_id!r} in this job's deck"}), 400
+        segment["slideId"] = source_slide_id
+        segment["customImagePath"] = None
+    else:
+        return jsonify({"error": "either an 'image' file upload or a 'sourceSlideId' is required"}), 400
+
+    if short["phase"] == "done":
+        short["phase"] = "ready_for_render"
+        short["step"] = "ready_for_render"
+    db.save_job(job)
+
+    return jsonify({"jobId": job_id, "shortId": short_id, "sequenceIndex": seq, "phase": short["phase"]})
+
+
+@app.delete("/jobs/<job_id>/shorts/<short_id>/segments/<int:seq>")
+def delete_segment(job_id, short_id, seq):
+    """Removes one segment (script, audio, and any custom image reference)
+    and renumbers the rest to stay contiguous. No audio impact on the
+    segments that remain, so this applies immediately."""
+    job = db.get_job(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    short = _find_short(job, short_id)
+    if not short:
+        return jsonify({"error": "short not found"}), 404
+    err = _check_short_editable(job, short)
+    if err:
+        return err
+    if not any(n["sequenceIndex"] == seq for n in short["script"]):
+        return jsonify({"error": "segment not found"}), 404
+    if len(short["script"]) <= 1:
+        return jsonify({"error": "a short must keep at least one segment"}), 400
+
+    remaining = sorted((n for n in short["script"] if n["sequenceIndex"] != seq), key=lambda n: n["sequenceIndex"])
+    pipeline.reindex_short(short, remaining)
+
+    if short["phase"] == "done":
+        short["phase"] = "ready_for_render"
+        short["step"] = "ready_for_render"
+    db.save_job(job)
+
+    return jsonify({"jobId": job_id, "shortId": short_id, "phase": short["phase"]})
+
+
+@app.post("/jobs/<job_id>/shorts/<short_id>/segments")
+def add_segment(job_id, short_id):
+    """Inserts a new segment at 'position' (0-based, default: end) with the
+    given narration text and an uploaded image (required - a new segment
+    has no original slide to fall back on). Queues just the new segment for
+    synthesis, same as a text edit."""
+    job = db.get_job(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    short = _find_short(job, short_id)
+    if not short:
+        return jsonify({"error": "short not found"}), 404
+    err = _check_short_editable(job, short)
+    if err:
+        return err
+
+    text = (request.form.get("script") or "").strip()
+    upload = request.files.get("image")
+    if not text:
+        return jsonify({"error": "script is required"}), 400
+    if not upload:
+        return jsonify({"error": "an 'image' file is required"}), 400
+    ext = os.path.splitext(upload.filename or "")[1].lower()
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        return jsonify({"error": f"unsupported image type {ext!r} - use png, jpg, or webp"}), 400
+
+    try:
+        position = int(request.form.get("position", len(short["script"])))
+    except ValueError:
+        return jsonify({"error": "position must be an integer"}), 400
+    position = max(0, min(position, len(short["script"])))
+
+    custom_dir = os.path.join(job_dir(job_id), "shorts", short_id, "custom-slides")
+    os.makedirs(custom_dir, exist_ok=True)
+    path = os.path.join(custom_dir, f"seg-new-{uuid.uuid4().hex[:8]}{ext}")
+    upload.save(path)
+
+    words = len(text.split())
+    new_segment = {
+        "sequenceIndex": None, "slideId": None, "script": text,
+        "estimatedWords": words, "estimatedSeconds": round((words / pipeline.WORDS_PER_MINUTE) * 60),
+        "customImagePath": path,
+    }
+    ordered = sorted(short["script"], key=lambda n: n["sequenceIndex"])
+    ordered.insert(position, new_segment)
+    pipeline.reindex_short(short, ordered)
+
+    short["pendingSegments"] = [new_segment["sequenceIndex"]]
+    short["phase"] = "editing"
+    short["step"] = "resynthesizing_audio"
+    job["activeShortId"] = short_id
+    job["phase"] = "editing"
+    job["step"] = "resynthesizing_audio"
     db.save_job(job)
 
     return jsonify({"jobId": job_id, "shortId": short_id, "phase": job["phase"], "step": job["step"]})

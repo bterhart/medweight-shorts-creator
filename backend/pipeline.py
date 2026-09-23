@@ -3,6 +3,8 @@ condensation, voice/TTS. Each function takes and mutates a job dict; the
 caller (worker.py) saves to the DB between steps so status polls see
 progress as it happens, same as the checkpoint pattern in the earlier n8n
 version."""
+from __future__ import annotations
+
 import hashlib
 import json
 import os
@@ -365,6 +367,30 @@ def build_short(job: dict, short: dict) -> None:
     short["script"] = sorted(script, key=lambda n: n["sequenceIndex"])
 
 
+def reindex_short(short: dict, ordered_script: list) -> None:
+    """Applies a segment delete or insert: ordered_script must already be in
+    the final desired order (a deleted segment simply isn't in it; an
+    inserted one already sits at its intended position) - some items'
+    sequenceIndex may now be stale or absent. Reassigns contiguous
+    sequenceIndex 0..N-1 and remaps short["audio"] entries to match by each
+    item's OLD sequenceIndex, dropping audio for anything removed. A newly
+    inserted segment has no old sequenceIndex to match, so it simply gets no
+    audio entry yet - the caller is expected to queue it in
+    pendingSegments for the worker to synthesize."""
+    seq_map = {}
+    for new_seq, item in enumerate(ordered_script):
+        old_seq = item.get("sequenceIndex")
+        if old_seq is not None:
+            seq_map[old_seq] = new_seq
+        item["sequenceIndex"] = new_seq
+    short["script"] = ordered_script
+
+    remapped_audio = [a for a in short.get("audio", []) if a["sequenceIndex"] in seq_map]
+    for a in remapped_audio:
+        a["sequenceIndex"] = seq_map[a["sequenceIndex"]]
+    short["audio"] = sorted(remapped_audio, key=lambda a: a["sequenceIndex"])
+
+
 def _voice_cache_path() -> str:
     return os.path.join(config.DATA_DIR, "voice-cache.json")
 
@@ -398,11 +424,21 @@ def resolve_voice(short: dict) -> None:
     voice["resolvedVoiceId"] = voice_id
 
 
-def synthesize_audio(short: dict, audio_dir: str) -> None:
+def synthesize_audio(short: dict, audio_dir: str, sequence_indexes: set | None = None) -> None:
+    """Synthesizes short["script"] into short["audio"]. With sequence_indexes
+    given, only (re)synthesizes those segments - one ElevenLabs call each -
+    and merges the result into whatever's already in short["audio"], leaving
+    every other segment's clip untouched (a post-review text edit or a
+    single newly added segment). Without it, synthesizes everything from
+    scratch, same as the original one-shot condensing behavior."""
     os.makedirs(audio_dir, exist_ok=True)
     voice_id = short["voice"]["resolvedVoiceId"]
-    audio = []
-    for n in short["script"]:
+    from mutagen.mp3 import MP3
+
+    segments = [n for n in short["script"] if sequence_indexes is None or n["sequenceIndex"] in sequence_indexes]
+
+    new_audio = {}
+    for n in segments:
         resp = requests.post(
             f"{config.ELEVENLABS_BASE_URL}/v1/text-to-speech/{voice_id}",
             headers={"xi-api-key": config.ELEVENLABS_API_KEY, "Content-Type": "application/json"},
@@ -415,8 +451,12 @@ def synthesize_audio(short: dict, audio_dir: str) -> None:
         with open(path, "wb") as f:
             f.write(resp.content)
 
-        from mutagen.mp3 import MP3
         duration = MP3(path).info.length
+        new_audio[seq] = {"sequenceIndex": seq, "path": path, "durationSeconds": duration}
 
-        audio.append({"sequenceIndex": seq, "path": path, "durationSeconds": duration})
-    short["audio"] = audio
+    if sequence_indexes is None:
+        short["audio"] = list(new_audio.values())
+    else:
+        merged = {a["sequenceIndex"]: a for a in short.get("audio", [])}
+        merged.update(new_audio)
+        short["audio"] = sorted(merged.values(), key=lambda a: a["sequenceIndex"])
