@@ -44,7 +44,7 @@ Serve `ui/` as static files any way you like (it's just three files) and open `i
    text** — resynthesizes just that segment's audio, nothing else), swap its image (a deck-slide picker or
    **Upload image…**), **Delete slide**, or use the **Add a slide** form to insert a new segment (text + image)
    at any position. A previously rendered preview stays visible after an edit, flagged as stale, until you
-   render again. Only one short per job can be mid-pipeline (condensing, editing, or rendering) at a time -
+   render again - at which point it's deleted and replaced by the new render. Only one short per job can be mid-pipeline (condensing, editing, or rendering) at a time -
    creating, editing, or rendering another while one is in flight gets a 409 until it finishes.
 
 ## Verified in a real browser, not just read against the code

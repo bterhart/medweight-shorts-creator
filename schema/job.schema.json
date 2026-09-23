@@ -238,9 +238,18 @@
             "properties": {
               "renderedAt": { "type": ["string", "null"], "format": "date-time" },
               "outputUrl": { "type": ["string", "null"] },
-              "renderCount": { "type": "integer", "default": 0 },
+              "renderCount": { "type": "integer", "default": 0, "description": "Monotonic across the short's life - never reset, so a replacement render's video-NN.mp4 never shares a name with the one being deleted." },
+              "staleRenderCount": {
+                "type": ["integer", "null"],
+                "description": "Transient - set by POST .../render when a previous render exists (its outputUrl/renderedAt are cleared at the same time, so the UI stops showing it immediately). Consumed by worker.run_render on dispatch, which deletes that render's video from S3 and drops its history entry. A re-render replaces the previous render rather than accumulating beside it."
+              },
+              "staleDeleteError": {
+                "type": ["string", "null"],
+                "description": "Diagnostic only - set when deleting a superseded render's video from S3 failed (the new render proceeds regardless). Cleared on the next successful delete. Almost always means the IAM policy lacks s3:DeleteObject on the render bucket."
+              },
               "history": {
                 "type": "array",
+                "description": "Renders whose video still exists. A superseded render's entry is removed when its video is deleted on the next re-render.",
                 "items": {
                   "type": "object",
                   "properties": {

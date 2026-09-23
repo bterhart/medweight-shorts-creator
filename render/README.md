@@ -36,7 +36,9 @@ In production the same `render()` function runs inside the Fargate container (`e
 per-short render view that `backend/fargate_client.py` uploads to S3 — shaped like the job-level input
 above (`slides`/`narration`/`audio`/`params`), where `narration` is that short's `script`. A segment may
 carry a `customImagePath` (its image was replaced with an upload, or it was added post-review); when set,
-`build_segments` uses it instead of resolving `slideId` against `slides`.
+`build_segments` uses it instead of resolving `slideId` against `slides`. There, unlike the CLI path
+above, a re-render replaces the previous one: `POST .../render` clears the stale preview and the worker
+deletes the old `video-NN.mp4` from S3 before dispatching the new render.
 
 ## How the transitions work
 

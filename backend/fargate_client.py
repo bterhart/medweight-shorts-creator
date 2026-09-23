@@ -143,9 +143,20 @@ def check_task(task_arn: str) -> dict:
     return {"state": "failed", "detail": detail}
 
 
+def _output_key(job_id: str, short_id: str, render_count: int) -> str:
+    return f"{_prefix(job_id, short_id)}/output/video-{render_count:02d}.mp4"
+
+
 def presigned_output_url(job_id: str, short_id: str, render_count: int, expires_in: int = 3600) -> str:
     s3 = _s3()
-    key = f"{_prefix(job_id, short_id)}/output/video-{render_count:02d}.mp4"
     return s3.generate_presigned_url(
-        "get_object", Params={"Bucket": config.RENDER_S3_BUCKET, "Key": key}, ExpiresIn=expires_in
+        "get_object",
+        Params={"Bucket": config.RENDER_S3_BUCKET, "Key": _output_key(job_id, short_id, render_count)},
+        ExpiresIn=expires_in,
     )
+
+
+def delete_output(job_id: str, short_id: str, render_count: int) -> None:
+    """Removes a superseded render's video from S3. delete_object is a no-op
+    on a key that's already gone, so calling this twice is harmless."""
+    _s3().delete_object(Bucket=config.RENDER_S3_BUCKET, Key=_output_key(job_id, short_id, render_count))

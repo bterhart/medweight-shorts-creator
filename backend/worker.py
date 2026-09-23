@@ -180,6 +180,25 @@ def run_render(job: dict, short: dict) -> None:
 
     if not task_arn:
         try:
+            # A re-render replaces the previous one: the trigger endpoint
+            # already cleared outputUrl (so the UI stopped showing it) and
+            # left the old render's number here for us to delete from S3.
+            stale_count = render_state.pop("staleRenderCount", None)
+            if stale_count is not None:
+                try:
+                    fargate_client.delete_output(job["jobId"], short["shortId"], stale_count)
+                    render_state["history"] = [
+                        h for h in render_state.get("history", []) if h.get("renderCount") != stale_count
+                    ]
+                    render_state.pop("staleDeleteError", None)
+                except Exception as e:
+                    # Cleanup of a superseded render must never block the new
+                    # one - the stale preview is already hidden (outputUrl was
+                    # cleared at trigger time), and a failed short is terminal.
+                    # Most likely cause: the IAM policy lacks s3:DeleteObject.
+                    render_state["staleDeleteError"] = f"video-{stale_count:02d}: {type(e).__name__}: {e}"
+                    print(f"warning: could not delete superseded render for short {short['shortId']}: "
+                          f"{render_state['staleDeleteError']}")
             overrides = render_state.get("pendingOverrides") or {}
             render_count = render_state.get("renderCount", 0) + 1
             task_arn = fargate_client.dispatch_render(job, short, render_count)

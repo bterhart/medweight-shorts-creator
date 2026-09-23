@@ -188,8 +188,15 @@ def trigger_short_render(job_id, short_id):
     if body.get("includeOutro"):
         overrides["includeOutro"] = True
 
-    short.setdefault("render", {})
-    short["render"]["pendingOverrides"] = overrides
+    render_state = short.setdefault("render", {})
+    # A re-render replaces the previous render rather than sitting beside
+    # it: drop the stale preview from the UI now, and leave its number for
+    # the worker to delete from S3 on dispatch (Flask never talks to AWS).
+    if render_state.get("outputUrl"):
+        render_state["staleRenderCount"] = render_state.get("renderCount", 0)
+        render_state["outputUrl"] = None
+        render_state["renderedAt"] = None
+    render_state["pendingOverrides"] = overrides
     short["phase"] = "rendering"
     short["step"] = "rendering"
     job["activeShortId"] = short_id

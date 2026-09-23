@@ -44,7 +44,8 @@ yet against live Manus/ElevenLabs/Anthropic accounts.
   picked from the full deck), delete it, or insert a brand-new segment (text + a required uploaded image)
   at any position. Deleting/inserting keeps `sequenceIndex` contiguous across `script[]` and `audio[]`. A
   previously rendered preview stays visible/downloadable after an edit (flagged as stale) rather than being
-  hidden or auto-re-rendered — re-rendering is still an explicit action.
+  hidden or auto-re-rendered — re-rendering is still an explicit action, and it replaces (deletes) the
+  previous render rather than keeping both.
 - **Custom intro/outro clips.** Each short's render controls now have "Include intro"/"Include outro"
   toggles. The clips themselves (`intro.mp4`, `outro.mp4`) are fixed, non-job-specific files that must be
   placed at `data/assets/intro.mp4` and `data/assets/outro.mp4` on the cPanel host (see
