@@ -19,11 +19,11 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import alignment
 import config
 import db
 import fargate_client
 import pipeline
-from manus_client import ManusWaiting, ManusTaskError
 
 
 def now_iso():
@@ -79,15 +79,10 @@ def run_prepare_pipeline(job: dict) -> None:
         job["slides"] = slides
         db.save_job(job)
 
-        job["step"] = "uploading_slides_to_manus"
-        with timed(f"upload_slides_to_manus ({len(slides)} slides)"):
-            pipeline.upload_slides_to_manus(job)
-        db.save_job(job)
-
         job["step"] = "aligning"
         db.save_job(job)
-        with timed("run_alignment"):
-            pipeline.run_alignment(job)
+        with timed(f"align_job ({len(slides)} slides)"):
+            alignment.align_job(job)
         db.save_job(job)
 
         job["step"] = "cleaning_narration"
@@ -104,12 +99,6 @@ def run_prepare_pipeline(job: dict) -> None:
         job["step"] = "ready_for_review"
         db.save_job(job)
 
-    except ManusWaiting as e:
-        fail_job(job, "aligning", str(e))
-    except ManusTaskError as e:
-        fail_job(job, "aligning", "Manus task failed", str(e))
-    except TimeoutError as e:
-        fail_job(job, "aligning", "Manus task timed out", str(e))
     except Exception as e:
         fail_job(job, job.get("step", "unknown"), f"{type(e).__name__}: {e}", traceback.format_exc())
 

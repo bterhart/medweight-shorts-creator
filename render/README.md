@@ -1,7 +1,7 @@
 # Phase 2 — render
 
 Turns a Phase-1-prepared job (`data/jobs/<jobId>/job.json` at `phase: ready_for_render`) into a video.
-Reads only files Phase 1 already produced — never calls Manus or ElevenLabs — so it's cheap and safe
+Reads only files Phase 1 already produced — never calls Claude or ElevenLabs — so it's cheap and safe
 to re-run repeatedly while tuning the transition.
 
 ## Setup

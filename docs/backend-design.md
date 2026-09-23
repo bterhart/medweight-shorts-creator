@@ -58,15 +58,17 @@ to the DB after each one so status polls see live progress:
 2. `extract_pdf_slides` — **PyMuPDF (`pymupdf`/`fitz`) instead of poppler-utils.** Renders pages to PNG and
    pulls text directly, no system binary (`pdftoppm`/`pdftotext`) or root access required — deliberate,
    since root/system-package access on the target host isn't guaranteed.
-3. `upload_slides_to_manus` / `run_alignment` — `backend/manus_client.py` implements the confirmed real
-   Manus v2 API: `file.upload`'s two-step create-record-then-PUT flow, `task.create` with slide images as
-   `file`-type parts mixed into `message.content` (not a separate `attachments` field), and polling via
-   `task.listMessages` scanning for the newest `status_update` event's `agent_status`. All of this was
-   verified against Manus's own OpenAPI specs during development, not third-party summaries. Slide uploads
-   run in parallel, and alignment creates up to `MANUS_MAX_CONCURRENT_TASKS` (default 4) chunk tasks
-   before polling any of them, so a multi-chunk deck takes about as long as its slowest chunk rather than
-   the sum - each Manus run is minutes, so this is the difference between ~5 and ~15+ minutes on a
-   3-chunk deck.
+3. `alignment.align_job` (`backend/alignment.py`) — one Claude vision request per job: the whole
+   transcript as numbered cues plus every slide as an image (re-rendered at 96 DPI for the request) with
+   its extracted text. The model returns, in narrative order, the inclusive cue range each slide was on
+   screen for; `transcriptExcerpt` is then sliced from the SRT, so it's exact rather than model-written,
+   and the reply is a few hundred tokens instead of a re-emitted transcript. Official `anthropic` SDK:
+   streaming (the image payload is large), structured output (`output_config.format` with a JSON schema,
+   so the reply is valid by construction), adaptive thinking at `ALIGNMENT_EFFORT`, and server-side
+   refusal fallbacks (`fallbacks: "default"`) so a benign deck tripping a safety classifier is re-run on
+   Anthropic's recommended substitute instead of failing the job. A deck over `MAX_SLIDES_PER_REQUEST`
+   (60) is split across requests that each still get the full transcript, and the results are merged by
+   cue order - there is never a transcript window.
 4. `clean_narration` — concurrent Anthropic Messages API calls (groups of `CLEAN_SEGMENTS_PER_CALL`
    segments, `CLEAN_CONCURRENCY` at a time - every excerpt is cleaned independently, so the split is
    lossless) producing `job.narration`: the full 1:1 slide-to-narration alignment, cleaned of
@@ -93,21 +95,24 @@ Between PyMuPDF and `imageio-ffmpeg`, the entire pipeline needs zero system pack
 and `pip install -r backend/requirements.txt` — a direct fix for not knowing whether the target host allows
 system-level installs.
 
-## The one hard constraint carried over unaddressed
+## Why alignment moved off Manus
 
-Manus caps `message.content`'s combined text at ~5,000 estimated tokens, with no way around it by
-splitting across parts (confirmed from their spec). `run_alignment` now truncates the transcript to
-`MAX_TRANSCRIPT_CHARS` (16,000 chars, a conservative buffer under the token cap) rather than sending it
-unbounded and getting an opaque `InvalidArgument` failure — an actual mitigation, not just a documented
-gap, though truncation itself means alignment quality degrades for long source videos rather than the job
-failing outright. Worth revisiting (real summarization instead of a hard cut) if long transcripts turn out
-to be common.
+Manus is an autonomous-agent platform; alignment is a single act of judgment over the deck and the talk.
+Every cost in the old design came from that mismatch: minutes of agent runtime per chunk, a confirmed
+~5k-token cap on message text that forced transcript *windows*, a confirmed file-attachment ceiling that
+forced 12-slide *chunks*, a window heuristic that could strand a slide's narration across a chunk
+boundary, and `waiting`/404 states the pipeline couldn't answer. Claude's 1M-token context takes the whole
+deck and the whole transcript in one request, so all of that machinery - and the quality loss it implied -
+is simply gone. The old `manus` job field is left in the schema as legacy for jobs aligned before this.
+Manus's real strengths (browsing, multi-step tool use, producing artifacts) belong in optional enrichment
+steps off the critical path - sourcing images, fact-checking claims against sources, publishing - not in
+the prepare pipeline.
 
 ## What's confirmed vs. still assumed
 
-Everything Manus-related is now built against confirmed specs (pasted directly from Manus's own docs
-during development): `file.upload`, `task.create`, `task.listMessages`, including the exact
-`{ok, request_id, ...}` response envelope and the `waiting`/`error`/`stopped`/`running` state machine.
-ElevenLabs (`text-to-speech`, `text-to-voice/design`) and Anthropic (`messages`) calls use standard,
-well-documented conventions but haven't been verified against your specific accounts the way Manus has —
-worth a real test run to confirm, same as the rest of this pipeline.
+The Manus-based pipeline ran end to end live. The Claude alignment step replaces it and is unverified
+against a real deck as of this change - the `worker.log` line for `align_job` (wall time and the request's
+input/output token counts) is the first thing to read on the next run, and `ALIGNMENT_EFFORT` is the
+lever if it is slow (`medium`) or a deck aligns poorly (`xhigh`). ElevenLabs (`text-to-speech`,
+`text-to-voice/design`) and the two remaining plain-HTTP Anthropic calls (`clean_narration`,
+`build_short`) have been exercised live.

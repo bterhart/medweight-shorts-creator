@@ -5,7 +5,7 @@ into a single video with the chosen transition style.
 
 Reads data/jobs/<jobId>/job.json (must be phase=ready_for_render, or
 phase=done for a re-render) and writes data/jobs/<jobId>/output/video-NN.mp4.
-Never calls Manus or ElevenLabs — everything it needs was already produced
+Never calls Claude or ElevenLabs — everything it needs was already produced
 and cached to disk by Phase 1, which is what makes this step cheap and
 repeatable (try a different --transition-type without redoing Phase 1).
 

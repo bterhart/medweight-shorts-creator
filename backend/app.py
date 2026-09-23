@@ -83,7 +83,6 @@ def create_job():
             "pdfs": pdf_meta,
         },
         "slides": [], "alignment": [], "narration": [], "shorts": [], "activeShortId": None,
-        "manus": {"taskIds": [], "status": None},
     }
 
     for d in ("input", "slides", "audio", "output"):

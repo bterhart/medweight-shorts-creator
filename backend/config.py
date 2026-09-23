@@ -32,23 +32,24 @@ DB_PASSWORD = os.environ.get("CHATBOT_SHORTS_DB_PASSWORD", "")
 DB_NAME = os.environ.get("CHATBOT_SHORTS_DB_NAME", "chatbot_shorts")
 DB_PORT = int(os.environ.get("CHATBOT_SHORTS_DB_PORT", "3306"))
 
-MANUS_API_KEY = os.environ.get("MANUS_API_KEY", "")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 # Overridable so tests can point at a local mock instead of the real APIs.
-MANUS_BASE_URL = os.environ.get("MANUS_BASE_URL", "https://api.manus.ai")
 ELEVENLABS_BASE_URL = os.environ.get("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io")
 ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
 
-WORKER_LOCK_FILE = os.environ.get("CHATBOT_SHORTS_WORKER_LOCK", os.path.join(DATA_DIR, "worker.lock"))
+# Slide-to-transcript alignment (alignment.py). Opus 5 by default - it's the
+# one judgment everything downstream inherits, and one request per job costs
+# well under a dollar. ALIGNMENT_EFFORT is the latency lever: "medium" if
+# alignment turns out slow, "xhigh" if a deck aligns poorly. Fallbacks re-run
+# a classifier-declined request on Anthropic's recommended substitute
+# server-side; set 0 only if the API rejects the parameter.
+ALIGNMENT_MODEL = os.environ.get("ALIGNMENT_MODEL", "claude-opus-5")
+ALIGNMENT_EFFORT = os.environ.get("ALIGNMENT_EFFORT", "high")
+ALIGNMENT_FALLBACKS = os.environ.get("ALIGNMENT_FALLBACKS", "1").lower() not in ("0", "false", "no")
 
-# How many Manus alignment tasks to run at once. Each chunk of slides is its
-# own Manus task and they're independent, so running them concurrently makes
-# alignment take about as long as the slowest chunk instead of the sum of all
-# of them. Set to 1 to restore strictly sequential behavior if Manus rejects
-# parallel tasks on this account.
-MANUS_MAX_CONCURRENT_TASKS = int(os.environ.get("MANUS_MAX_CONCURRENT_TASKS", "4"))
+WORKER_LOCK_FILE = os.environ.get("CHATBOT_SHORTS_WORKER_LOCK", os.path.join(DATA_DIR, "worker.lock"))
 
 # Rendering runs on AWS Fargate instead of in-process - the cPanel shared
 # host's CPU throttling made local moviepy/ffmpeg encoding take 50+ minutes

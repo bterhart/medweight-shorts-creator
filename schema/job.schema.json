@@ -27,7 +27,6 @@
         "saving_inputs",
         "parsing_srt",
         "extracting_pdfs",
-        "uploading_slides_to_manus",
         "aligning",
         "cleaning_narration",
         "ready_for_review",
@@ -122,24 +121,27 @@
           "pdfId": { "type": "string" },
           "pageNumber": { "type": "integer" },
           "imagePath": { "type": "string" },
-          "textPath": { "type": "string", "description": "pdftotext output for this page, used as supplementary context alongside the image itself." },
-          "manusFileId": { "type": ["string", "null"], "description": "File ID after upload to Manus Files API." }
+          "textPath": { "type": "string", "description": "Extracted page text, given to the alignment model alongside the image itself." }
         }
       }
     },
 
     "alignment": {
       "type": "array",
-      "description": "Manus's vision+text alignment output: which slide(s), in what order, map to which part of the transcript. Populated during 'aligning'.",
+      "description": "Claude's alignment output (backend/alignment.py): which slide was on screen for which stretch of the transcript, in transcript order. The model cites cue ranges; transcriptExcerpt is sliced from the SRT itself, never model-written text. Populated during 'aligning'.",
       "items": {
         "type": "object",
         "required": ["sequenceIndex", "slideId", "transcriptExcerpt"],
         "properties": {
           "sequenceIndex": { "type": "integer" },
           "slideId": { "type": "string" },
+          "startCue": { "type": "integer", "description": "0-based index into the SRT's cues, inclusive." },
+          "endCue": { "type": "integer", "description": "0-based index into the SRT's cues, inclusive." },
+          "startSeconds": { "type": "number" },
+          "endSeconds": { "type": "number" },
           "transcriptExcerpt": { "type": "string" },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-          "notes": { "type": "string", "description": "Manus's rationale, kept for the human review UI, e.g. 'chart matches narration about flow rates'." }
+          "notes": { "type": "string", "description": "The model's one-phrase rationale, kept for the human review UI, e.g. 'chart matches narration about flow rates'." }
         }
       }
     },
@@ -277,10 +279,10 @@
 
     "manus": {
       "type": "object",
-      "description": "One Manus task per chunk of pipeline.SLIDES_PER_MANUS_CHUNK slides - task.create has both a text-size cap and a separate, confirmed-live file-attachment ceiling that a single call can't always satisfy for a real deck.",
+      "description": "Legacy - only present on jobs aligned by the earlier Manus-based pipeline. New jobs do not write it.",
       "properties": {
-        "taskIds": { "type": "array", "items": { "type": "string" }, "description": "One per chunk, in order, appended as each chunk's task is created." },
-        "status": { "type": ["string", "null"], "description": "Status of the most recently created chunk's task." }
+        "taskIds": { "type": "array", "items": { "type": "string" } },
+        "status": { "type": ["string", "null"] }
       }
     }
   }

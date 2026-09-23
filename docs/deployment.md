@@ -14,6 +14,10 @@ git clone https://github.com/bterhart/medweight-shorts-creator.git chatbot-short
 ## 2. Create the Python App in cPanel
 
 cPanel → **Setup Python App** → Create Application:
+- Python version: **3.10 or newer** (pick the newest offered, e.g. 3.11). The `anthropic` SDK that
+  `backend/alignment.py` uses requires 3.10+; on a 3.9 app `pip` cannot satisfy `anthropic>=1` and the
+  install fails loudly. An existing 3.9 app can't be switched in place - create a new app on the newer
+  version, point it at the same root, and update the cron line in step 7 to the new venv path.
 - Application root: `chatbot-shorts/backend`
 - Application URL: whatever path/subdomain you want this served at (e.g. `chatbot-shorts` → `medweight.ca/chatbot-shorts`)
 - Application startup file: `app_entry.py`
@@ -31,8 +35,8 @@ app's) — you don't write that part by hand. It also prints the exact `pip inst
 virtualenv; use it (not a bare system `pip3 install`) for the next step:
 
 ```bash
-# cPanel shows you the real path; it looks like this:
-source /home/medweight/virtualenv/chatbot-shorts/backend/3.9/bin/activate
+# cPanel shows you the real path; it looks like this (the version segment matches the app's Python):
+source /home/medweight/virtualenv/chatbot-shorts/backend/3.11/bin/activate
 pip install -r /home/medweight/chatbot-shorts/backend/requirements.txt
 ```
 
@@ -63,9 +67,10 @@ host/user/password/database you choose.)
 cp /home/medweight/chatbot-shorts/backend/.env.example /home/medweight/chatbot-shorts/backend/.env
 ```
 
-Fill in `.env`: DB credentials from step 4, plus `MANUS_API_KEY` / `ELEVENLABS_API_KEY` /
-`ANTHROPIC_API_KEY` (use freshly rotated keys — never ones that have appeared in a chat transcript).
-`.env` is gitignored; it never gets committed.
+Fill in `.env`: DB credentials from step 4, plus `ELEVENLABS_API_KEY` / `ANTHROPIC_API_KEY` (use
+freshly rotated keys — never ones that have appeared in a chat transcript). The `ALIGNMENT_*` entries are
+optional and default sensibly (Opus 5, `high` effort, fallbacks on). `.env` is gitignored; it never gets
+committed.
 
 ## 6. Restart the app and smoke-test it
 
@@ -82,7 +87,7 @@ curl -s https://medweight.ca/chatbot-shorts/jobs/nonexistent/status
 cPanel → **Cron Jobs** → Add New Cron Job, every minute:
 
 ```
-* * * * * /home/medweight/virtualenv/chatbot-shorts/backend/3.9/bin/python3 /home/medweight/chatbot-shorts/backend/worker.py >> /home/medweight/chatbot-shorts/worker.log 2>&1
+* * * * * /home/medweight/virtualenv/chatbot-shorts/backend/3.11/bin/python3 /home/medweight/chatbot-shorts/backend/worker.py >> /home/medweight/chatbot-shorts/worker.log 2>&1
 ```
 
 Use the **virtualenv's** python (the path cPanel showed you in step 2), not the system `python3` — the

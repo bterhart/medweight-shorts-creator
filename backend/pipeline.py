@@ -1,8 +1,8 @@
-"""Phase 1 pipeline steps - PDF/SRT extraction, Manus alignment, narration
-condensation, voice/TTS. Each function takes and mutates a job dict; the
-caller (worker.py) saves to the DB between steps so status polls see
-progress as it happens, same as the checkpoint pattern in the earlier n8n
-version."""
+"""Pipeline steps - PDF/SRT extraction, narration cleaning, short writing,
+voice/TTS. (Slide-to-transcript alignment lives in alignment.py.) Each
+function takes and mutates a job dict; the caller (worker.py) saves to the
+DB between steps so status polls see progress as it happens, same as the
+checkpoint pattern in the earlier n8n version."""
 from __future__ import annotations
 
 import hashlib
@@ -17,20 +17,14 @@ import requests
 
 import config
 import db
-import manus_client
 
 WORDS_PER_MINUTE = 130
-# Manus caps message.content's combined text at ~5000 estimated tokens with
-# no way around it by splitting - a real constraint hit during development,
-# not a guess. ~4 chars/token is a conservative estimate that leaves margin.
-MAX_TRANSCRIPT_CHARS = 16000
 # The prompt-library entry build_short() falls back to when a short doesn't
 # name one (shorts created before the Create-short form had a prompt picker).
 # Referenced by name, not pasted as a literal, so editing it in the library
 # takes effect immediately. Never job["params"]["narrationStyle"] - that's
 # clean_narration's style-neutral field, not this stage's.
 SHORT_NARRATION_PROMPT_NAME = "Second pass (CBT/MI/ACT/DBT narration)"
-UPLOAD_WORKERS = 8
 # clean_narration is output-bound: the cleaned text is nearly as long as the
 # transcript, so one call re-emits the whole talk. Splitting the segments
 # across concurrent calls divides that wall time and keeps each call well
@@ -39,7 +33,16 @@ CLEAN_SEGMENTS_PER_CALL = 10
 CLEAN_CONCURRENCY = 4
 
 
-def parse_srt(srt_path: str) -> dict:
+def _srt_time_to_seconds(t: str) -> float:
+    h, m, rest = t.strip().split(":")
+    s, ms = rest.replace(".", ",").split(",")
+    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+
+
+def parse_srt_cues(srt_path: str) -> list:
+    """Every cue as {start, end, text} (seconds), in file order. The cue's
+    position in this list is the index alignment.py asks Claude to cite, so
+    the SRT's own (possibly gappy) numbering is deliberately not used."""
     text = open(srt_path, "r", encoding="utf-8", errors="replace").read()
     blocks = [b for b in text.replace("\r", "").split("\n\n") if b.strip()]
     cues = []
@@ -49,14 +52,18 @@ def parse_srt(srt_path: str) -> dict:
         if not time_line:
             continue
         idx = lines.index(time_line)
-        cues.append({"time": time_line.strip(), "text": " ".join(lines[idx + 1:]).strip()})
+        start, end = time_line.split("-->")
+        cues.append({
+            "start": _srt_time_to_seconds(start),
+            "end": _srt_time_to_seconds(end),
+            "text": " ".join(lines[idx + 1:]).strip(),
+        })
+    return cues
 
-    def to_seconds(t):
-        h, m, rest = t.split(":")
-        s, ms = rest.split(",")
-        return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
 
-    duration = to_seconds(cues[-1]["time"].split(" --> ")[1]) if cues else 0
+def parse_srt(srt_path: str) -> dict:
+    cues = parse_srt_cues(srt_path)
+    duration = cues[-1]["end"] if cues else 0
     full_text = " ".join(c["text"] for c in cues)
     return {"cueCount": len(cues), "durationSeconds": duration, "fullText": full_text}
 
@@ -83,169 +90,11 @@ def extract_pdf_slides(pdf_path: str, pdf_id: str, slides_dir: str) -> list:
 
             slides.append({
                 "slideId": slide_id, "pdfId": pdf_id, "pageNumber": page_num + 1,
-                "imagePath": image_path, "textPath": text_path, "manusFileId": None,
+                "imagePath": image_path, "textPath": text_path,
             })
     finally:
         doc.close()
     return slides
-
-
-def upload_slides_to_manus(job: dict) -> None:
-    """Two HTTP round-trips per slide, all independent of each other - run
-    them in parallel. pool.map returns results in slide order and re-raises
-    the first failure, same as the sequential loop it replaces."""
-    slides = job["slides"]
-    with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS) as pool:
-        file_ids = list(pool.map(
-            lambda s: manus_client.upload_file(s["imagePath"], os.path.basename(s["imagePath"])), slides))
-    for slide, file_id in zip(slides, file_ids):
-        slide["manusFileId"] = file_id
-
-
-def build_alignment_schema() -> dict:
-    # Manus's structured-output subset requires every property listed in
-    # `required` with additionalProperties:false at every level - confirmed
-    # from the real task.create spec, not the usual JSON Schema default.
-    return {
-        "type": "object",
-        "properties": {
-            "alignment": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "slide_id": {"type": "string"},
-                        "transcript_excerpt": {"type": "string"},
-                        "confidence": {"type": "number"},
-                        "notes": {"type": "string"},
-                    },
-                    "required": ["slide_id", "transcript_excerpt", "confidence", "notes"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["alignment"],
-        "additionalProperties": False,
-    }
-
-
-SLIDES_PER_MANUS_CHUNK = 12
-# Confirmed live, not assumed: a real 33-slide/33-file-attachment task.create
-# call reproducibly failed with Manus's own internal error ("node server
-# request failed"), while the exact same job's transcript+schema succeeded
-# fine at 14 slides. The ceiling is somewhere between 14 and 33; 12 is a
-# conservative choice under that confirmed-working number.
-MANUS_CHUNK_OVERLAP_CHARS = 2500
-
-
-def run_alignment(job: dict) -> None:
-    """Aligns the full transcript to the full slide deck, one Manus task per
-    chunk of SLIDES_PER_MANUS_CHUNK slides. Two independent per-call limits
-    are both confirmed live: the ~5,000-estimated-token text cap (handled by
-    windowing, same as before) and the file-attachment ceiling above
-    (handled by chunking) - a single call still can't just send everything
-    even for a small-enough slide count, since the full transcript alone can
-    exceed the text cap regardless of file count.
-
-    The transcript is split into per-chunk windows proportional to each
-    chunk's position in the slide deck, padded with overlap on both sides so
-    uneven presenter pacing doesn't strand content right at a chunk
-    boundary. This is a heuristic, not exact: a slide whose real narration
-    falls outside its chunk's window (even with overlap) will just be
-    skipped, the same graceful behavior Manus already has for slides with no
-    corresponding content. worker.py doesn't call db.save_job() until this
-    whole function returns (or raises), so alignment/manus fields below are
-    mutated onto `job` progressively as each chunk completes - if a later
-    chunk fails, worker.py's exception handler still persists whatever
-    chunks already succeeded (and their Manus credit cost isn't invisible),
-    even though a retry can't yet skip redoing them."""
-    full_transcript = job["sources"]["srt"]["fullText"]
-    total_chars = len(full_transcript)
-    slides = job["slides"]
-    known_ids = {s["slideId"] for s in slides}
-
-    def resolve_slide_id(raw_id):
-        """Manus is asked to echo back our slide_id exactly, but with a real
-        (larger, messier) deck it has sometimes returned the attached
-        filename instead (e.g. 'pdf-1-p001.png' instead of 'pdf-1-p001') -
-        confirmed live, not a guess. Strip a trailing image extension before
-        giving up, since that's the one variation actually observed."""
-        if raw_id in known_ids:
-            return raw_id
-        stripped = os.path.splitext(raw_id)[0]
-        if stripped in known_ids:
-            return stripped
-        raise manus_client.ManusTaskError(
-            f"Manus returned slide_id {raw_id!r}, which doesn't match any known slide ID {sorted(known_ids)}"
-        )
-
-    chunks = [slides[i:i + SLIDES_PER_MANUS_CHUNK] for i in range(0, len(slides), SLIDES_PER_MANUS_CHUNK)]
-    num_chunks = len(chunks)
-
-    def chunk_content(i, chunk_slides):
-        nominal_start = round(total_chars * i / num_chunks)
-        nominal_end = round(total_chars * (i + 1) / num_chunks)
-        window = full_transcript[max(0, nominal_start - MANUS_CHUNK_OVERLAP_CHARS):
-                                  min(total_chars, nominal_end + MANUS_CHUNK_OVERLAP_CHARS)]
-        truncated = False
-        if len(window) > MAX_TRANSCRIPT_CHARS:
-            window = window[:MAX_TRANSCRIPT_CHARS]
-            truncated = True
-
-        slide_meta = [
-            {"slide_id": s["slideId"], "pdf_role": next(p["role"] for p in job["sources"]["pdfs"] if p["id"] == s["pdfId"])}
-            for s in chunk_slides
-        ]
-        prompt_text = (
-            "You are aligning a video transcript to presentation slide images.\n\n"
-            f"This is part {i + 1} of {num_chunks} of a single continuous presentation, split up only "
-            "because of a message-size limit - only the slides attached below (a contiguous slice of the "
-            "full deck) need aligning in this call.\n\n"
-            "Slide images are attached below as file parts, in the order listed here, each tagged 'primary' "
-            "or 'supplementary' by source deck. Build the main narrative sequence from the primary deck; pull "
-            "a slide from a supplementary deck only when it covers transcript content the primary deck does "
-            "not show. Skip slides (title/agenda/blank) that have no corresponding narrated content.\n\n"
-            f"Transcript excerpt covering approximately this slice, padded with overlap on each side so "
-            f"content right at the boundary isn't missed{' (truncated to fit the message size limit)' if truncated else ''}:\n"
-            f"{window}\n\n"
-            f"Slide order and role metadata (matches the order of the attached file parts):\n{json.dumps(slide_meta)}\n\n"
-            "Return, in narrative order, which of these attached slides correspond to which excerpt of the transcript."
-        )
-        return [{"type": "text", "text": prompt_text}] + [
-            {"type": "file", "file_id": s["manusFileId"]} for s in chunk_slides
-        ]
-
-    job["alignment"] = []
-    job["manus"]["taskIds"] = []
-    seq = 0
-    # Chunks are independent, so create up to MANUS_MAX_CONCURRENT_TASKS of
-    # them before polling any: Manus works on all of them at once and the
-    # window takes about as long as its slowest chunk, not the sum. Polling
-    # in chunk order keeps sequenceIndex in deck order, and each chunk's
-    # alignment still lands on `job` as soon as it finishes, so a later
-    # failure still leaves the earlier chunks' work persisted.
-    window_size = max(1, config.MANUS_MAX_CONCURRENT_TASKS)
-    indexed_chunks = list(enumerate(chunks))
-    for start in range(0, num_chunks, window_size):
-        window_task_ids = []
-        for i, chunk_slides in indexed_chunks[start:start + window_size]:
-            task_id = manus_client.create_task(chunk_content(i, chunk_slides), build_alignment_schema())
-            job["manus"]["taskIds"].append(task_id)
-            window_task_ids.append(task_id)
-        job["manus"]["status"] = "running"
-
-        for task_id in window_task_ids:
-            value = manus_client.poll_task(task_id)
-            for a in value.get("alignment", []):
-                job["alignment"].append({
-                    "sequenceIndex": seq,
-                    "slideId": resolve_slide_id(a["slide_id"]),
-                    "transcriptExcerpt": a["transcript_excerpt"],
-                    "confidence": a.get("confidence"),
-                    "notes": a.get("notes", ""),
-                })
-                seq += 1
-    job["manus"]["status"] = "stopped"
 
 
 def _claude_json(prompt: str, what: str) -> dict:

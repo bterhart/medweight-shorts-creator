@@ -1,8 +1,8 @@
 # Chatbot Shorts
 
 Turns a video transcript (`.srt`) plus its presentation slides (`.pdf`) into a short narrated video:
-Manus aligns transcript to slides, Claude condenses the narration to a target length, ElevenLabs voices it,
-and the slides are assembled into a video with a chosen transition.
+Claude aligns the transcript to the slides and condenses the narration to a target length, ElevenLabs voices
+it, and the slides are assembled into a video with a chosen transition.
 
 ## Layout
 
@@ -22,11 +22,12 @@ and `ui/` just needs to know the Flask app's base URL (set via its Settings pane
 
 ## Status
 
-Manus's API (`file.upload`, `task.create`, `task.listMessages`) is implemented against confirmed specs
-from Manus's own docs, not guesses. ElevenLabs and Anthropic calls use standard documented conventions but
-haven't been verified against real accounts the way Manus has. The full pipeline has been tested end to end
-against a real MySQL database, real PDF extraction, and a mock matching Manus's confirmed API shape — not
-yet against live Manus/ElevenLabs/Anthropic accounts.
+The pipeline has run end to end live (real MySQL, real Manus/Claude/ElevenLabs/Fargate) with the earlier
+Manus-based alignment. Alignment now runs on Claude instead (`backend/alignment.py`, official `anthropic`
+SDK, Opus 5 by default) - one vision request over the whole deck and whole transcript. That step is the
+newest piece and is unverified against a real deck as of this change: its `worker.log` line
+(`align_job (N slides): …s`, plus the request's token counts) is the first thing to check on the next run.
+**It needs Python 3.10+** (the SDK's floor) - see `docs/deployment.md`.
 
 ## Planned work
 
@@ -37,11 +38,15 @@ yet against live Manus/ElevenLabs/Anthropic accounts.
 
 ## Recently added
 
-- **Faster prepare phase, and per-step timings.** Slide uploads to Manus run in parallel; alignment
-  creates up to `MANUS_MAX_CONCURRENT_TASKS` (default 4) chunk tasks before polling any, so a multi-chunk
-  deck takes about as long as its slowest chunk instead of the sum; narration cleaning is split across
-  concurrent Claude calls (lossless - each excerpt is independent), which also removes a silent-truncation
-  risk on long transcripts. `worker.log` now records each step's wall time.
+- **Alignment moved from Manus to Claude.** One request per job (`backend/alignment.py`): every slide as
+  an image with its extracted text, plus the full transcript as numbered cues. The model returns cue
+  ranges, not text, so each excerpt is sliced exactly from the SRT. No transcript windows or chunk
+  boundaries any more - the model sees the whole deck and whole talk at once - and a multi-minute agent run
+  per chunk becomes a single sub-minute call. `manus_client.py` and the `MANUS_*` config are gone;
+  `anthropic>=1` is a new dependency (Python 3.10+).
+- **Faster narration cleaning, and per-step timings.** Cleaning is split across concurrent Claude calls
+  (lossless - each excerpt is independent), which also removes a silent-truncation risk on long
+  transcripts. `worker.log` records each step's wall time.
 - **Per-short prompt choice.** The Create-short form has a "Narration prompt" dropdown listing the saved
   library (defaulting to the second-pass entry `build_short` used to apply silently by name). The choice is
   stored on the short. The Step 1 dropdown now says when the library is empty, and both lists reload after

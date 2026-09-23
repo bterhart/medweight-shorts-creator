@@ -14,7 +14,6 @@ const STEP_ORDER = [
   ["saving_inputs", "Saving uploaded files"],
   ["parsing_srt", "Parsing transcript"],
   ["extracting_pdfs", "Extracting slide images"],
-  ["uploading_slides_to_manus", "Uploading slides to Manus"],
   ["aligning", "Aligning transcript to slides"],
   ["cleaning_narration", "Cleaning narration text"],
   ["ready_for_review", "Ready for review"],
@@ -934,7 +933,7 @@ $("prompt-save-as-btn").addEventListener("click", async () => {
 // ---------- existing-job picker ----------
 // Refreshing the page loses state.jobId (in-memory only), which otherwise
 // means the only way back to an already-prepared job's review screen is to
-// resubmit and re-spend Manus/Claude/ElevenLabs credits on work that's
+// resubmit and re-spend Claude/ElevenLabs credits on work that's
 // already done - this picker is the fix for that.
 async function loadJobList() {
   try {

@@ -3,5 +3,6 @@ pymysql
 cryptography
 pymupdf
 requests
+anthropic>=1
 boto3
 mutagen
