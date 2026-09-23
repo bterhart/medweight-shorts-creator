@@ -139,6 +139,13 @@
           <textarea id="short-voice-custom" placeholder="e.g. 50s male, Scottish accent, warm documentary narrator" hidden></textarea>
         </div>
 
+        <div class="field-group">
+          <label for="short-prompt">Narration prompt</label>
+          <select id="short-prompt"></select>
+          <p class="hint">The saved prompt this short's narration is written with (your library from Step 1's "Narration style").</p>
+          <p id="short-prompt-hint" class="error-text" hidden>No saved prompts yet — write one under Step 1's "Narration style" and use "Save as new…" before creating a short.</p>
+        </div>
+
         <button id="create-short-btn" class="primary-btn" type="button">Create short</button>
         <p id="create-short-status" class="hint" hidden></p>
         <p id="create-short-error" class="error-text" hidden></p>

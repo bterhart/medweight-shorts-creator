@@ -87,6 +87,13 @@ $("settings-save").addEventListener("click", () => {
   localStorage.setItem("apiBase", $("api-base").value.trim());
   $("settings-panel").hidden = true;
   validateSetup();
+  // Both lists were fetched at page load against whatever base was set
+  // then - a first-time or changed base would otherwise leave them empty
+  // (or stale) until a reload. Clear any load-failure/empty-library text
+  // from that first attempt so a now-successful load isn't contradicted.
+  showError($("prompt-status"), "");
+  loadPrompts();
+  loadJobList();
 });
 
 // ---------- SRT dropzone ----------
@@ -346,7 +353,7 @@ function renderShortsList(job, slidesById) {
   }
 
   const blocked = Boolean(job.activeShortId);
-  $("create-short-btn").disabled = blocked;
+  $("create-short-btn").disabled = blocked || prompts.length === 0;
   $("create-short-status").hidden = !blocked;
   if (blocked) $("create-short-status").textContent = "A short is currently processing — wait for it to finish before creating another.";
 }
@@ -755,6 +762,10 @@ $("create-short-btn").addEventListener("click", async () => {
     showError($("create-short-error"), "Topic is required.");
     return;
   }
+  if (!$("short-prompt").value) {
+    showError($("create-short-error"), "Save a narration prompt in Step 1 first — a short needs one to be written with.");
+    return;
+  }
   if (!confirmDiscardUnsaved()) return;
 
   $("create-short-btn").disabled = true;
@@ -765,6 +776,7 @@ $("create-short-btn").addEventListener("click", async () => {
   const body = {
     topic,
     targetDurationSeconds: Number($("short-duration").value),
+    promptId: $("short-prompt").value,
     voice: {
       mode: voiceMode,
       presetVoiceId: voiceMode === "preset" ? $("short-voice-preset").value : null,
@@ -814,6 +826,11 @@ $("back-btn").addEventListener("click", () => {
 // ---------- narration-style prompt library ----------
 let prompts = [];
 
+// The library entry a new short defaults to - the one build_short used to
+// apply silently, so existing habits carry over; any saved prompt can be
+// picked instead.
+const DEFAULT_SHORT_PROMPT_NAME = "Second pass (CBT/MI/ACT/DBT narration)";
+
 async function loadPrompts(selectId) {
   try {
     const res = await fetch(`${getApiBase()}/prompts`);
@@ -828,9 +845,34 @@ async function loadPrompts(selectId) {
       picker.appendChild(opt);
     }
     if (selectId) picker.value = selectId;
+    fillShortPromptPicker();
+    // An empty library and a failed load looked identical before (a bare
+    // "Custom" entry, no message) - say which it is. Only ever set, never
+    // cleared here: the save handlers write their own confirmation to this
+    // element right before re-calling loadPrompts, and must not lose it.
+    if (!prompts.length) showError($("prompt-status"), 'No saved prompts yet — write a style above and use "Save as new…".');
   } catch (err) {
     showError($("prompt-status"), `Failed to load saved prompts: ${err.message}`);
   }
+}
+
+function fillShortPromptPicker() {
+  const picker = $("short-prompt");
+  const previous = picker.value;
+  picker.innerHTML = "";
+  for (const p of prompts) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name;
+    picker.appendChild(opt);
+  }
+  const keep = prompts.find((p) => p.id === previous)
+    || prompts.find((p) => p.name === DEFAULT_SHORT_PROMPT_NAME)
+    || prompts[0];
+  if (keep) picker.value = keep.id;
+  $("short-prompt-hint").hidden = prompts.length > 0;
+  const blocked = Boolean(state.currentJob && state.currentJob.activeShortId);
+  $("create-short-btn").disabled = blocked || prompts.length === 0;
 }
 
 $("prompt-picker").addEventListener("change", () => {

@@ -62,15 +62,27 @@ to the DB after each one so status polls see live progress:
    Manus v2 API: `file.upload`'s two-step create-record-then-PUT flow, `task.create` with slide images as
    `file`-type parts mixed into `message.content` (not a separate `attachments` field), and polling via
    `task.listMessages` scanning for the newest `status_update` event's `agent_status`. All of this was
-   verified against Manus's own OpenAPI specs during development, not third-party summaries.
-4. `clean_narration` — one Anthropic Messages API call producing `job.narration`: the full 1:1
-   slide-to-narration alignment, cleaned of filler/personal references, sized to nothing. Permanent once
-   written - nothing later ever mutates it in place.
+   verified against Manus's own OpenAPI specs during development, not third-party summaries. Slide uploads
+   run in parallel, and alignment creates up to `MANUS_MAX_CONCURRENT_TASKS` (default 4) chunk tasks
+   before polling any of them, so a multi-chunk deck takes about as long as its slowest chunk rather than
+   the sum - each Manus run is minutes, so this is the difference between ~5 and ~15+ minutes on a
+   3-chunk deck.
+4. `clean_narration` — concurrent Anthropic Messages API calls (groups of `CLEAN_SEGMENTS_PER_CALL`
+   segments, `CLEAN_CONCURRENCY` at a time - every excerpt is cleaned independently, so the split is
+   lossless) producing `job.narration`: the full 1:1 slide-to-narration alignment, cleaned of
+   filler/personal references, sized to nothing. Splitting also keeps each call well under `max_tokens`;
+   a reply that does hit it is now a hard error rather than a silently truncated narration. Permanent
+   once written - nothing later ever mutates it in place.
 5. `build_short` — a separate, explicitly-triggered step (`POST /jobs/<id>/shorts`, not part of the
    automatic prepare flow): one Anthropic Messages API call that writes a single coherent, duration-targeted
    narrative from the full `job.narration` pool (not a per-slide shrink) and grounds it back onto whichever
-   original slides it actually covers - always via the hardcoded "Second pass (CBT/MI/ACT/DBT narration)"
-   prompt, looked up from `narration_prompts` by name. A job can hold any number of these.
+   original slides it actually covers - via whichever `narration_prompts` entry the Create-short form chose
+   (stored on the short as `prompt.id`/`name`). Shorts created before that picker existed fall back to the
+   entry named "Second pass (CBT/MI/ACT/DBT narration)". A job can hold any number of these.
+
+`worker.py` prints each step's wall time to `worker.log` (`parse_srt`, `upload_slides_to_manus`,
+`run_alignment`, `clean_narration`, `build_short`, `synthesize_audio`, dispatch, and render duration), so a
+slow run says where the minutes went instead of that being reconstructed after the fact.
 6. `resolve_voice` / `synthesize_audio` — ElevenLabs preset or Voice Design (cached by description hash in
    `DATA_DIR/voice-cache.json`, same as before) and per-segment TTS, with duration read via
    `moviepy.AudioFileClip` instead of shelling out to `ffprobe` separately — one less external dependency,

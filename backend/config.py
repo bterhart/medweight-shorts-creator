@@ -43,6 +43,13 @@ ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic
 
 WORKER_LOCK_FILE = os.environ.get("CHATBOT_SHORTS_WORKER_LOCK", os.path.join(DATA_DIR, "worker.lock"))
 
+# How many Manus alignment tasks to run at once. Each chunk of slides is its
+# own Manus task and they're independent, so running them concurrently makes
+# alignment take about as long as the slowest chunk instead of the sum of all
+# of them. Set to 1 to restore strictly sequential behavior if Manus rejects
+# parallel tasks on this account.
+MANUS_MAX_CONCURRENT_TASKS = int(os.environ.get("MANUS_MAX_CONCURRENT_TASKS", "4"))
+
 # Rendering runs on AWS Fargate instead of in-process - the cPanel shared
 # host's CPU throttling made local moviepy/ffmpeg encoding take 50+ minutes
 # for a 33-second test video (confirmed live). AWS_ACCESS_KEY_ID/

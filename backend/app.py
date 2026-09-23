@@ -137,10 +137,21 @@ def create_short(job_id):
     if not target_duration or not voice.get("mode"):
         return jsonify({"error": "targetDurationSeconds and voice are required"}), 400
 
+    # Which prompt-library entry writes this short. Resolved to id+name now so
+    # the short records what it was built with even if the entry is later
+    # renamed; an omitted promptId keeps the pre-picker default.
+    prompt_ref = {"id": None, "name": pipeline.SHORT_NARRATION_PROMPT_NAME}
+    if body.get("promptId"):
+        row = db.get_prompt(body["promptId"])
+        if row is None:
+            return jsonify({"error": "promptId does not match any saved prompt"}), 400
+        prompt_ref = {"id": row["id"], "name": row["name"]}
+
     short_id = str(uuid.uuid4())
     short = {
         "shortId": short_id, "createdAt": now_iso(),
         "topic": topic, "targetDurationSeconds": target_duration,
+        "prompt": prompt_ref,
         "voice": {
             "mode": voice["mode"],
             "presetVoiceId": voice.get("presetVoiceId"),

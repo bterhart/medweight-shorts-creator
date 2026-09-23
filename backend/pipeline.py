@@ -10,6 +10,7 @@ import json
 import os
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pymupdf
 import requests
@@ -23,12 +24,19 @@ WORDS_PER_MINUTE = 130
 # no way around it by splitting - a real constraint hit during development,
 # not a guess. ~4 chars/token is a conservative estimate that leaves margin.
 MAX_TRANSCRIPT_CHARS = 16000
-# build_short() always uses this prompt for style, regardless of any
-# per-job narrationStyle text (that's clean_narration's field, not this
-# stage's) - the full CBT/MI/ACT/DBT framing belongs here, not in the
-# style-neutral cleaning pass. Referenced by name (not pasted as a literal
-# string) so editing it in the prompt library takes effect immediately.
+# The prompt-library entry build_short() falls back to when a short doesn't
+# name one (shorts created before the Create-short form had a prompt picker).
+# Referenced by name, not pasted as a literal, so editing it in the library
+# takes effect immediately. Never job["params"]["narrationStyle"] - that's
+# clean_narration's style-neutral field, not this stage's.
 SHORT_NARRATION_PROMPT_NAME = "Second pass (CBT/MI/ACT/DBT narration)"
+UPLOAD_WORKERS = 8
+# clean_narration is output-bound: the cleaned text is nearly as long as the
+# transcript, so one call re-emits the whole talk. Splitting the segments
+# across concurrent calls divides that wall time and keeps each call well
+# under max_tokens - a single call could silently truncate a long transcript.
+CLEAN_SEGMENTS_PER_CALL = 10
+CLEAN_CONCURRENCY = 4
 
 
 def parse_srt(srt_path: str) -> dict:
@@ -83,8 +91,15 @@ def extract_pdf_slides(pdf_path: str, pdf_id: str, slides_dir: str) -> list:
 
 
 def upload_slides_to_manus(job: dict) -> None:
-    for slide in job["slides"]:
-        slide["manusFileId"] = manus_client.upload_file(slide["imagePath"], os.path.basename(slide["imagePath"]))
+    """Two HTTP round-trips per slide, all independent of each other - run
+    them in parallel. pool.map returns results in slide order and re-raises
+    the first failure, same as the sequential loop it replaces."""
+    slides = job["slides"]
+    with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS) as pool:
+        file_ids = list(pool.map(
+            lambda s: manus_client.upload_file(s["imagePath"], os.path.basename(s["imagePath"])), slides))
+    for slide, file_id in zip(slides, file_ids):
+        slide["manusFileId"] = file_id
 
 
 def build_alignment_schema() -> dict:
@@ -167,10 +182,7 @@ def run_alignment(job: dict) -> None:
     chunks = [slides[i:i + SLIDES_PER_MANUS_CHUNK] for i in range(0, len(slides), SLIDES_PER_MANUS_CHUNK)]
     num_chunks = len(chunks)
 
-    job["alignment"] = []
-    job["manus"]["taskIds"] = []
-    seq = 0
-    for i, chunk_slides in enumerate(chunks):
+    def chunk_content(i, chunk_slides):
         nominal_start = round(total_chars * i / num_chunks)
         nominal_end = round(total_chars * (i + 1) / num_chunks)
         window = full_transcript[max(0, nominal_start - MANUS_CHUNK_OVERLAP_CHARS):
@@ -199,26 +211,73 @@ def run_alignment(job: dict) -> None:
             f"Slide order and role metadata (matches the order of the attached file parts):\n{json.dumps(slide_meta)}\n\n"
             "Return, in narrative order, which of these attached slides correspond to which excerpt of the transcript."
         )
-        content = [{"type": "text", "text": prompt_text}] + [
+        return [{"type": "text", "text": prompt_text}] + [
             {"type": "file", "file_id": s["manusFileId"]} for s in chunk_slides
         ]
 
-        task_id = manus_client.create_task(content, build_alignment_schema())
-        job["manus"]["taskIds"].append(task_id)
+    job["alignment"] = []
+    job["manus"]["taskIds"] = []
+    seq = 0
+    # Chunks are independent, so create up to MANUS_MAX_CONCURRENT_TASKS of
+    # them before polling any: Manus works on all of them at once and the
+    # window takes about as long as its slowest chunk, not the sum. Polling
+    # in chunk order keeps sequenceIndex in deck order, and each chunk's
+    # alignment still lands on `job` as soon as it finishes, so a later
+    # failure still leaves the earlier chunks' work persisted.
+    window_size = max(1, config.MANUS_MAX_CONCURRENT_TASKS)
+    indexed_chunks = list(enumerate(chunks))
+    for start in range(0, num_chunks, window_size):
+        window_task_ids = []
+        for i, chunk_slides in indexed_chunks[start:start + window_size]:
+            task_id = manus_client.create_task(chunk_content(i, chunk_slides), build_alignment_schema())
+            job["manus"]["taskIds"].append(task_id)
+            window_task_ids.append(task_id)
         job["manus"]["status"] = "running"
 
-        value = manus_client.poll_task(task_id)
-        job["manus"]["status"] = "stopped"
+        for task_id in window_task_ids:
+            value = manus_client.poll_task(task_id)
+            for a in value.get("alignment", []):
+                job["alignment"].append({
+                    "sequenceIndex": seq,
+                    "slideId": resolve_slide_id(a["slide_id"]),
+                    "transcriptExcerpt": a["transcript_excerpt"],
+                    "confidence": a.get("confidence"),
+                    "notes": a.get("notes", ""),
+                })
+                seq += 1
+    job["manus"]["status"] = "stopped"
 
-        for a in value.get("alignment", []):
-            job["alignment"].append({
-                "sequenceIndex": seq,
-                "slideId": resolve_slide_id(a["slide_id"]),
-                "transcriptExcerpt": a["transcript_excerpt"],
-                "confidence": a.get("confidence"),
-                "notes": a.get("notes", ""),
-            })
-            seq += 1
+
+def _claude_json(prompt: str, what: str) -> dict:
+    """One Messages API call whose reply is expected to be a JSON object,
+    tolerating a reply that wraps it in prose. Plain requests, matching the
+    rest of this module. A reply cut off at max_tokens is a hard error, not
+    something to parse - it would silently drop the tail of the output."""
+    resp = requests.post(
+        f"{config.ANTHROPIC_BASE_URL}/v1/messages",
+        headers={
+            "x-api-key": config.ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        json={"model": "claude-sonnet-5", "max_tokens": 16000, "messages": [{"role": "user", "content": prompt}]},
+        timeout=180,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("stop_reason") == "max_tokens":
+        raise RuntimeError(f"{what}: Claude's output was cut off at max_tokens - the input needs splitting further")
+    text_block = next((block for block in data["content"] if block.get("type") == "text"), None)
+    if text_block is None:
+        raise RuntimeError(f"{what}: Claude response had no text block (stop_reason={data.get('stop_reason')})")
+    text = text_block["text"]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            raise RuntimeError(f"{what}: Claude response contained no JSON object")
+        return json.loads(match.group(0))
 
 
 def clean_narration(job: dict) -> None:
@@ -227,63 +286,50 @@ def clean_narration(job: dict) -> None:
     reads this output). This pass produces job["narration"] once and it's
     permanent from here on - cleaning removes filler and personal references
     only; it must not shape content for any narration-style modality
-    (CBT/MI/ACT/etc) - build_short does that, with its own hardcoded prompt.
-    job["alignment"] is left untouched as the
-    original/raw excerpts, so nothing this step does is irreversible."""
+    (CBT/MI/ACT/etc) - build_short does that, with the short's chosen prompt.
+    job["alignment"] is left untouched as the original/raw excerpts, so
+    nothing this step does is irreversible.
+
+    Every excerpt is cleaned independently of the others, so the segments
+    are split into groups of CLEAN_SEGMENTS_PER_CALL and cleaned by
+    CLEAN_CONCURRENCY calls at a time; the result is reassembled in
+    alignment order, keyed by sequence_index."""
     alignment = job["alignment"]
     style = job["params"].get("narrationStyle") or "clear, neutral documentary narration"
     segments = [
         {"sequence_index": a["sequenceIndex"], "slide_id": a["slideId"], "excerpt": a["transcriptExcerpt"]}
         for a in alignment
     ]
-    prompt = (
-        f'Clean each transcript excerpt below into narration matching this style: "{style}".\n'
-        "For each excerpt:\n"
-        "1. Remove filler - text that doesn't help a listener understand what the narration is trying to "
-        "teach, establish, or clarify.\n"
-        "2. Remove personal references - names, addresses, designations, and similar identifying details.\n"
-        "3. Do NOT shape tone or content for any later narration modality (e.g. CBT, MI, ACT) - keep this "
-        "pass style-neutral; that adaptation happens in a separate step.\n"
-        "Keep everything else - this is cleaning, not summarizing or shortening. Preserve full teaching "
-        "content and keep each segment's sentences natural and self-contained (each plays over one static "
-        "image).\n"
-        'Respond with ONLY JSON of the shape {"narration":[{"sequence_index":0,"slide_id":"...","script":"..."}]}.\n\n'
-        f"Segments:\n{json.dumps(segments, indent=2)}"
-    )
+    groups = [segments[i:i + CLEAN_SEGMENTS_PER_CALL] for i in range(0, len(segments), CLEAN_SEGMENTS_PER_CALL)]
 
-    resp = requests.post(
-        f"{config.ANTHROPIC_BASE_URL}/v1/messages",
-        headers={
-            "x-api-key": config.ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        },
-        # Unlike condense_narration, output length scales with the source
-        # material (minus filler), not a fixed word budget - a long real
-        # transcript may need this raised further, or split across multiple
-        # calls (deferred - see the chunking follow-up discussed with the
-        # user).
-        json={"model": "claude-sonnet-5", "max_tokens": 16000, "messages": [{"role": "user", "content": prompt}]},
-        timeout=180,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    content = data["content"]
-    text_block = next((block for block in content if block.get("type") == "text"), None)
-    if text_block is None:
-        raise RuntimeError(
-            f"clean_narration: Claude response had no text block (stop_reason={data.get('stop_reason')})"
+    def clean_group(group):
+        prompt = (
+            f'Clean each transcript excerpt below into narration matching this style: "{style}".\n'
+            "For each excerpt:\n"
+            "1. Remove filler - text that doesn't help a listener understand what the narration is trying to "
+            "teach, establish, or clarify.\n"
+            "2. Remove personal references - names, addresses, designations, and similar identifying details.\n"
+            "3. Do NOT shape tone or content for any later narration modality (e.g. CBT, MI, ACT) - keep this "
+            "pass style-neutral; that adaptation happens in a separate step.\n"
+            "Keep everything else - this is cleaning, not summarizing or shortening. Preserve full teaching "
+            "content and keep each segment's sentences natural and self-contained (each plays over one static "
+            "image).\n"
+            'Respond with ONLY JSON of the shape {"narration":[{"sequence_index":0,"slide_id":"...","script":"..."}]}, '
+            "one entry per segment below, keeping each sequence_index exactly as given.\n\n"
+            f"Segments:\n{json.dumps(group, indent=2)}"
         )
-    text = text_block["text"]
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        parsed = json.loads(match.group(0)) if match else {"narration": []}
+        return _claude_json(prompt, "clean_narration").get("narration", [])
 
+    with ThreadPoolExecutor(max_workers=CLEAN_CONCURRENCY) as pool:
+        results = list(pool.map(clean_group, groups))
+
+    cleaned_by_seq = {n["sequence_index"]: n.get("script", "") for group_result in results for n in group_result}
+    missing = [a["sequenceIndex"] for a in alignment if a["sequenceIndex"] not in cleaned_by_seq]
+    if missing:
+        print(f"warning: clean_narration got no cleaned text back for sequence indexes {missing} - left empty")
     job["narration"] = [
-        {"sequenceIndex": n["sequence_index"], "slideId": n["slide_id"], "script": n.get("script", "")}
-        for n in parsed.get("narration", [])
+        {"sequenceIndex": a["sequenceIndex"], "slideId": a["slideId"], "script": cleaned_by_seq.get(a["sequenceIndex"], "")}
+        for a in alignment
     ]
 
 
@@ -298,12 +344,20 @@ def build_short(job: dict, short: dict) -> None:
     behavior for a short focused on one topic within a longer deck, or
     condensed to a duration too short to touch every slide.
 
-    Always uses the hardcoded SHORT_NARRATION_PROMPT_NAME prompt (full
-    CBT/MI/ACT/DBT framing) for style. job["params"]["narrationStyle"] is
-    clean_narration's field, not this one."""
-    style_prompt_row = db.get_prompt_by_name(SHORT_NARRATION_PROMPT_NAME)
+    Style comes from the prompt-library entry the short was created with
+    (short["prompt"], chosen in the Create-short form), falling back to the
+    SHORT_NARRATION_PROMPT_NAME entry for shorts that predate that picker.
+    job["params"]["narrationStyle"] is clean_narration's field, not this
+    one."""
+    prompt_ref = short.get("prompt") or {}
+    if prompt_ref.get("id"):
+        style_prompt_row = db.get_prompt(prompt_ref["id"])
+        label = prompt_ref.get("name") or prompt_ref["id"]
+    else:
+        style_prompt_row = db.get_prompt_by_name(SHORT_NARRATION_PROMPT_NAME)
+        label = SHORT_NARRATION_PROMPT_NAME
     if style_prompt_row is None:
-        raise RuntimeError(f"build_short: no narration_prompts row named {SHORT_NARRATION_PROMPT_NAME!r}")
+        raise RuntimeError(f"build_short: narration prompt {label!r} no longer exists in the prompt library")
     style_prompt = style_prompt_row["text"]
 
     full_narration = [
@@ -330,30 +384,7 @@ def build_short(job: dict, short: dict) -> None:
         f"Source narration:\n{json.dumps(full_narration, indent=2)}"
     )
 
-    resp = requests.post(
-        f"{config.ANTHROPIC_BASE_URL}/v1/messages",
-        headers={
-            "x-api-key": config.ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        },
-        json={"model": "claude-sonnet-5", "max_tokens": 16000, "messages": [{"role": "user", "content": prompt}]},
-        timeout=180,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    content = data["content"]
-    text_block = next((block for block in content if block.get("type") == "text"), None)
-    if text_block is None:
-        raise RuntimeError(
-            f"build_short: Claude response had no text block (stop_reason={data.get('stop_reason')})"
-        )
-    text = text_block["text"]
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        parsed = json.loads(match.group(0)) if match else {"narration": []}
+    parsed = _claude_json(prompt, "build_short")
 
     script = []
     for n in parsed.get("narration", []):

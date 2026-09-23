@@ -172,6 +172,14 @@
             "description": "Required. What this short is about, e.g. 'full presentation overview' or 'the wastewater treatment section' - the only way to tell shorts on the same job apart, so it's mandatory rather than optional."
           },
           "targetDurationSeconds": { "type": "integer", "enum": [45, 90, 180, 300] },
+          "prompt": {
+            "type": "object",
+            "description": "The narration_prompts entry build_short writes this short with, chosen in the Create-short form. id null means the short predates that picker and build_short falls back to the library entry named pipeline.SHORT_NARRATION_PROMPT_NAME.",
+            "properties": {
+              "id": { "type": ["string", "null"] },
+              "name": { "type": "string" }
+            }
+          },
           "voice": {
             "type": "object",
             "required": ["mode"],

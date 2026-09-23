@@ -37,6 +37,15 @@ yet against live Manus/ElevenLabs/Anthropic accounts.
 
 ## Recently added
 
+- **Faster prepare phase, and per-step timings.** Slide uploads to Manus run in parallel; alignment
+  creates up to `MANUS_MAX_CONCURRENT_TASKS` (default 4) chunk tasks before polling any, so a multi-chunk
+  deck takes about as long as its slowest chunk instead of the sum; narration cleaning is split across
+  concurrent Claude calls (lossless - each excerpt is independent), which also removes a silent-truncation
+  risk on long transcripts. `worker.log` now records each step's wall time.
+- **Per-short prompt choice.** The Create-short form has a "Narration prompt" dropdown listing the saved
+  library (defaulting to the second-pass entry `build_short` used to apply silently by name). The choice is
+  stored on the short. The Step 1 dropdown now says when the library is empty, and both lists reload after
+  saving the API base in Settings instead of only at page load.
 - **Post-render slide editing.** Once a short has a script+audio (`ready_for_render` or `done`), each
   segment can be edited from the review UI: rewrite its narration text (queues just that segment for
   ElevenLabs resynthesis via a new short phase, `editing` — every other segment's audio is untouched),

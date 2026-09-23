@@ -12,7 +12,9 @@ from __future__ import annotations
 import fcntl
 import os
 import sys
+import time
 import traceback
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +28,17 @@ from manus_client import ManusWaiting, ManusTaskError
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+@contextmanager
+def timed(label: str):
+    """Prints a step's wall time to worker.log, so a slow run shows where the
+    minutes actually went instead of that being guessed at afterward."""
+    start = time.monotonic()
+    try:
+        yield
+    finally:
+        print(f"  {label}: {time.monotonic() - start:.1f}s")
 
 
 def fail_job(job: dict, step: str, message: str, detail: str = "") -> None:
@@ -52,30 +65,35 @@ def run_prepare_pipeline(job: dict) -> None:
 
     try:
         job["step"] = "parsing_srt"
-        srt_info = pipeline.parse_srt(job["sources"]["srt"]["path"])
+        with timed("parse_srt"):
+            srt_info = pipeline.parse_srt(job["sources"]["srt"]["path"])
         job["sources"]["srt"].update(srt_info)
         db.save_job(job)
 
         job["step"] = "extracting_pdfs"
         slides_dir = os.path.join(job_dir, "slides")
         slides = []
-        for pdf in job["sources"]["pdfs"]:
-            slides.extend(pipeline.extract_pdf_slides(pdf["path"], pdf["id"], slides_dir))
+        with timed("extract_pdf_slides"):
+            for pdf in job["sources"]["pdfs"]:
+                slides.extend(pipeline.extract_pdf_slides(pdf["path"], pdf["id"], slides_dir))
         job["slides"] = slides
         db.save_job(job)
 
         job["step"] = "uploading_slides_to_manus"
-        pipeline.upload_slides_to_manus(job)
+        with timed(f"upload_slides_to_manus ({len(slides)} slides)"):
+            pipeline.upload_slides_to_manus(job)
         db.save_job(job)
 
         job["step"] = "aligning"
         db.save_job(job)
-        pipeline.run_alignment(job)
+        with timed("run_alignment"):
+            pipeline.run_alignment(job)
         db.save_job(job)
 
         job["step"] = "cleaning_narration"
         db.save_job(job)
-        pipeline.clean_narration(job)
+        with timed(f"clean_narration ({len(job['alignment'])} segments)"):
+            pipeline.clean_narration(job)
 
         # Duration-based condensing, voice resolution, and audio synthesis
         # are deferred to a later step that doesn't exist yet (per explicit
@@ -115,18 +133,21 @@ def run_condense_pipeline(job: dict) -> None:
     try:
         short["step"] = "condensing_narration"
         db.save_job(job)
-        pipeline.build_short(job, short)
+        with timed("build_short"):
+            pipeline.build_short(job, short)
         db.save_job(job)
 
         short["step"] = "resolving_voice"
         db.save_job(job)
-        pipeline.resolve_voice(short)
+        with timed("resolve_voice"):
+            pipeline.resolve_voice(short)
         db.save_job(job)
 
         short["step"] = "synthesizing_audio"
         db.save_job(job)
         audio_dir = os.path.join(job_dir, "audio", short["shortId"])
-        pipeline.synthesize_audio(short, audio_dir)
+        with timed(f"synthesize_audio ({len(short['script'])} segments)"):
+            pipeline.synthesize_audio(short, audio_dir)
 
         short["phase"] = "ready_for_render"
         short["step"] = "ready_for_render"
@@ -156,7 +177,8 @@ def run_edit_pipeline(job: dict) -> None:
         db.save_job(job)
         audio_dir = os.path.join(job_dir, "audio", short["shortId"])
         pending = set(short.pop("pendingSegments", []) or [])
-        pipeline.synthesize_audio(short, audio_dir, sequence_indexes=pending)
+        with timed(f"resynthesize_audio ({len(pending)} segment(s))"):
+            pipeline.synthesize_audio(short, audio_dir, sequence_indexes=pending)
 
         short["phase"] = "ready_for_render"
         short["step"] = "ready_for_render"
@@ -201,7 +223,8 @@ def run_render(job: dict, short: dict) -> None:
                           f"{render_state['staleDeleteError']}")
             overrides = render_state.get("pendingOverrides") or {}
             render_count = render_state.get("renderCount", 0) + 1
-            task_arn = fargate_client.dispatch_render(job, short, render_count)
+            with timed("dispatch_render (asset upload + ECS run_task)"):
+                task_arn = fargate_client.dispatch_render(job, short, render_count)
             render_state["fargateTaskArn"] = task_arn
             render_state["fargatePendingRenderCount"] = render_count
             render_state["fargateAppliedOverrides"] = overrides
@@ -230,6 +253,8 @@ def run_render(job: dict, short: dict) -> None:
     if status["state"] == "succeeded":
         render_count = render_state.pop("fargatePendingRenderCount")
         overrides = render_state.pop("fargateAppliedOverrides", {})
+        dispatched_at = datetime.fromisoformat(render_state["fargateDispatchedAt"])
+        print(f"  render: {(datetime.now(timezone.utc) - dispatched_at).total_seconds():.1f}s from dispatch to completion")
         output_url = fargate_client.presigned_output_url(job["jobId"], short["shortId"], render_count)
         now = now_iso()
         history_entry = {
@@ -258,6 +283,10 @@ def run_render(job: dict, short: dict) -> None:
 
 
 def main():
+    # stdout is a file under cron, so Python would otherwise buffer every
+    # print until exit - and a prepare run lasts minutes. Line-buffer it so
+    # the per-step timings above appear in worker.log as they happen.
+    sys.stdout.reconfigure(line_buffering=True)
     os.makedirs(config.DATA_DIR, exist_ok=True)
     lock_fd = open(config.WORKER_LOCK_FILE, "w")
     try:

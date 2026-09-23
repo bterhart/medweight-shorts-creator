@@ -6,7 +6,7 @@ webhooks, see `archive/README.md` for why that changed):
 - `POST {apiBase}/jobs` — job intake
 - `GET {apiBase}/jobs/:jobId/status` — polled every 3s
 - `POST {apiBase}/jobs/:jobId/shorts` — create a short (condenses the job's permanent narration to a
-  target duration/topic, resolves voice, synthesizes audio)
+  target duration/topic with the saved prompt named by `promptId`, resolves voice, synthesizes audio)
 - `POST {apiBase}/jobs/:jobId/shorts/:shortId/render` — render trigger, scoped to one short
 - `PATCH {apiBase}/jobs/:jobId/shorts/:shortId/segments/:seq` — rewrite one segment's narration text
   (queues just that segment for resynthesis via the short's `editing` phase)
@@ -35,7 +35,9 @@ Serve `ui/` as static files any way you like (it's just three files) and open `i
    narration, a collapsed "show original excerpt" comparison) - the full 1:1 alignment, unchanged for the
    life of the job. Below it, a **Shorts** panel lets you create any number of independent shorts from that
    narration: give each one a required **topic** (what it's about - the only way to tell shorts on the same
-   job apart), a target duration, and a voice, then **Create short**. This calls `POST /jobs/:id/shorts`,
+   job apart), a target duration, a voice, and which saved **narration prompt** to write it with (the
+   library from Step 1's "Narration style"; defaults to the second-pass entry - with an empty library the
+   form says so and the button stays disabled), then **Create short**. This calls `POST /jobs/:id/shorts`,
    which writes one coherent condensed script from the full narration (not a per-slide shrink) and grounds
    it back onto whichever original slides it actually covers - often a subset, sometimes just a few slides
    out of a large deck. Once a short reaches `ready_for_render`, its card gets its own transition/output
