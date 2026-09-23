@@ -45,19 +45,30 @@ def _prefix(job_id: str, short_id: str) -> str:
 
 
 def dispatch_render(job: dict, short: dict, render_count: int) -> str:
-    """Uploads a render view of this short (job.json shaped exactly like the
-    old job-level render input - slides/narration/audio/params/pendingOverrides
-    - so render/render.py and render/ecs_task.py need no changes at all) plus
-    its slide/audio files to S3, launches the Fargate render task, and
-    returns its task ARN. Each short renders under its own S3 prefix so
-    multiple shorts on the same job never collide."""
+    """Uploads a render view of this short (job.json shaped like the old
+    job-level render input - slides/narration/audio/params/pendingOverrides -
+    so render/render.py and render/ecs_task.py read it unchanged) plus the
+    files it references to S3, launches the Fargate render task, and returns
+    its task ARN. Each short renders under its own S3 prefix so multiple
+    shorts on the same job never collide.
+
+    Only the slides this short's script actually references are included
+    and uploaded - a 90s short uses a handful of a 70-slide deck, and the
+    render never reads a slide's extracted text, so neither the unused
+    images nor any .txt files are sent."""
     job_id, short_id = job["jobId"], short["shortId"]
     prefix = _prefix(job_id, short_id)
     s3 = _s3()
 
+    used_slide_ids = {n["slideId"] for n in short["script"] if n.get("slideId")}
+    used_slides = [
+        {k: v for k, v in slide.items() if k != "textPath"}
+        for slide in job.get("slides", []) if slide["slideId"] in used_slide_ids
+    ]
+
     render_view = {
         "jobId": job_id,
-        "slides": job.get("slides", []),
+        "slides": used_slides,
         "narration": short["script"],
         "audio": short["audio"],
         "params": job["params"],
@@ -65,11 +76,10 @@ def dispatch_render(job: dict, short: dict, render_count: int) -> str:
     }
     s3.put_object(Bucket=config.RENDER_S3_BUCKET, Key=f"{prefix}/job.json", Body=json.dumps(render_view))
 
-    for slide in job.get("slides", []):
-        for field in ("imagePath", "textPath"):
-            path = slide.get(field)
-            if path and os.path.isfile(path):
-                s3.upload_file(path, config.RENDER_S3_BUCKET, f"{prefix}/slides/{os.path.basename(path)}")
+    for slide in used_slides:
+        path = slide.get("imagePath")
+        if path and os.path.isfile(path):
+            s3.upload_file(path, config.RENDER_S3_BUCKET, f"{prefix}/slides/{os.path.basename(path)}")
 
     for a in short.get("audio", []):
         path = a.get("path")
