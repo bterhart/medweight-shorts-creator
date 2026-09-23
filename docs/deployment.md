@@ -95,6 +95,21 @@ your own machine while testing). Open it, click **Settings**, set the webhook ba
 Flask app is reachable — e.g. `https://medweight.ca/chatbot-shorts` (no trailing slash; `app.js` appends
 `/jobs`, `/files`, etc. itself).
 
+## Intro/outro clips (optional)
+
+To enable the "Include intro"/"Include outro" toggles on a short's render controls, upload the two fixed
+clips to the cPanel host at:
+
+```
+/home/medweight/chatbot-shorts/data/assets/intro.mp4
+/home/medweight/chatbot-shorts/data/assets/outro.mp4
+```
+
+These are shared across every job/short — not per-job files — and are gitignored (`data/` is never
+committed). A render only uploads whichever of the two it actually requests to S3
+(`backend/fargate_client.py`) for the Fargate task to fetch; leave a toggle off if its file isn't there yet,
+since requesting one that's missing fails that render with a clear "not present" error.
+
 ## 9. Verifying a real end-to-end run
 
 1. Submit a job through the UI (or `curl -F params=... -F srt=@... -F pdf_0=@...` directly against

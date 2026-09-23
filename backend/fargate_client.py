@@ -15,9 +15,25 @@ import boto3
 
 import config
 
+# Fixed, non-job-specific keys - render/ecs_task.py downloads from these same
+# keys regardless of which job/short is rendering.
+INTRO_ASSET_KEY = "assets/intro.mp4"
+OUTRO_ASSET_KEY = "assets/outro.mp4"
+
 
 def _s3():
     return boto3.client("s3", region_name=config.AWS_REGION)
+
+
+def _upload_shared_asset(s3, filename: str, key: str) -> None:
+    """intro.mp4/outro.mp4 are fixed clips uploaded once by hand to
+    DATA_DIR/assets/ on the cPanel host - re-uploaded to S3 on every render
+    that requests them, since the Fargate task has no other access to the
+    cPanel host's disk."""
+    path = os.path.join(config.DATA_DIR, "assets", filename)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"{filename} was requested but is not present at {path}")
+    s3.upload_file(path, config.RENDER_S3_BUCKET, key)
 
 
 def _ecs():
@@ -59,6 +75,12 @@ def dispatch_render(job: dict, short: dict, render_count: int) -> str:
         path = a.get("path")
         if path and os.path.isfile(path):
             s3.upload_file(path, config.RENDER_S3_BUCKET, f"{prefix}/audio/{os.path.basename(path)}")
+
+    overrides = short.get("render", {}).get("pendingOverrides") or {}
+    if overrides.get("includeIntro"):
+        _upload_shared_asset(s3, "intro.mp4", INTRO_ASSET_KEY)
+    if overrides.get("includeOutro"):
+        _upload_shared_asset(s3, "outro.mp4", OUTRO_ASSET_KEY)
 
     ecs = _ecs()
     resp = ecs.run_task(

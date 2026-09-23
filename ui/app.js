@@ -320,6 +320,19 @@ function renderShortsList(job, slidesById) {
   if (blocked) $("create-short-status").textContent = "A short is currently processing — wait for it to finish before creating another.";
 }
 
+function buildCheckboxField(id, labelText) {
+  const wrapper = document.createElement("label");
+  wrapper.className = "checkbox-field";
+  wrapper.htmlFor = id;
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.id = id;
+  const span = document.createElement("span");
+  span.textContent = labelText;
+  wrapper.append(input, span);
+  return { wrapper, input };
+}
+
 function buildShortCard(job, short, slidesById) {
   const card = document.createElement("div");
   card.className = "short-card";
@@ -382,6 +395,13 @@ function buildShortCard(job, short, slidesById) {
     card.append(video, download);
   }
 
+  const introToggle = buildCheckboxField(`intro-${short.shortId}`, "Include intro");
+  const outroToggle = buildCheckboxField(`outro-${short.shortId}`, "Include outro");
+  const toggles = document.createElement("div");
+  toggles.className = "field-row";
+  toggles.append(introToggle.wrapper, outroToggle.wrapper);
+  card.appendChild(toggles);
+
   const controls = document.createElement("div");
   controls.className = "field-row";
 
@@ -417,7 +437,9 @@ function buildShortCard(job, short, slidesById) {
   renderBtn.textContent = short.phase === "rendering" ? "Rendering…" : "Render video";
   renderBtn.disabled = short.phase === "rendering" || Boolean(job.activeShortId);
   renderBtn.addEventListener("click", () =>
-    triggerShortRender(short.shortId, transitionType.value, aspect.value, quality.value, errorEl));
+    triggerShortRender(
+      short.shortId, transitionType.value, aspect.value, quality.value,
+      introToggle.input.checked, outroToggle.input.checked, errorEl));
 
   controls.append(transitionType, aspect, quality, renderBtn);
   card.appendChild(controls);
@@ -430,7 +452,7 @@ function buildShortCard(job, short, slidesById) {
   return card;
 }
 
-async function triggerShortRender(shortId, transitionType, aspect, quality, errorEl) {
+async function triggerShortRender(shortId, transitionType, aspect, quality, includeIntro, includeOutro, errorEl) {
   showError(errorEl, "");
   const resolution = RESOLUTION_MAP[aspect][quality];
   const t = state.currentJob.params.transition;
@@ -439,6 +461,8 @@ async function triggerShortRender(shortId, transitionType, aspect, quality, erro
     transitionSeconds: t.transitionSeconds,
     minSlideSeconds: t.minSlideSeconds,
     resolution,
+    includeIntro,
+    includeOutro,
   };
 
   try {

@@ -19,6 +19,11 @@ import boto3
 
 from render import render as render_video
 
+# Fixed, non-job-specific keys - uploaded once by backend/fargate_client.py
+# from DATA_DIR/assets/ on the cPanel host, not scoped under a job's prefix.
+INTRO_ASSET_KEY = "assets/intro.mp4"
+OUTRO_ASSET_KEY = "assets/outro.mp4"
+
 
 def s3_download_prefix(s3, bucket, prefix, local_dir):
     paginator = s3.get_paginator("list_objects_v2")
@@ -66,10 +71,25 @@ def main():
         rewrite_local_paths(job, local_dir)
 
         overrides = job.get("render", {}).get("pendingOverrides") or {}
+
+        intro_path = None
+        if overrides.get("includeIntro"):
+            intro_path = local_dir / "assets" / "intro.mp4"
+            intro_path.parent.mkdir(parents=True, exist_ok=True)
+            s3.download_file(bucket, INTRO_ASSET_KEY, str(intro_path))
+
+        outro_path = None
+        if overrides.get("includeOutro"):
+            outro_path = local_dir / "assets" / "outro.mp4"
+            outro_path.parent.mkdir(parents=True, exist_ok=True)
+            s3.download_file(bucket, OUTRO_ASSET_KEY, str(outro_path))
+
         final_video, ttype, resolution = render_video(
             job,
             transition_override={k: v for k, v in overrides.items() if k in ("type", "transitionSeconds", "minSlideSeconds")} or None,
             resolution_override=overrides.get("resolution"),
+            intro_path=str(intro_path) if intro_path else None,
+            outro_path=str(outro_path) if outro_path else None,
         )
 
         out_path = local_dir / "output" / f"video-{render_count:02d}.mp4"

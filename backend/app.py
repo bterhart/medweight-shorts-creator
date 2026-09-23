@@ -162,6 +162,10 @@ def trigger_short_render(job_id, short_id):
         overrides["minSlideSeconds"] = body["minSlideSeconds"]
     if body.get("resolution"):
         overrides["resolution"] = body["resolution"]
+    if body.get("includeIntro"):
+        overrides["includeIntro"] = True
+    if body.get("includeOutro"):
+        overrides["includeOutro"] = True
 
     short.setdefault("render", {})
     short["render"]["pendingOverrides"] = overrides

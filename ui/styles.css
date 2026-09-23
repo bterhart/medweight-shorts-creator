@@ -76,6 +76,9 @@ input[type="text"], input[type="number"], select, textarea {
 textarea { min-height: 60px; resize: vertical; }
 .inline-number { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; font-weight: 500; max-width: 160px; }
 
+.checkbox-field { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; font-weight: 500; }
+.checkbox-field input[type="checkbox"] { width: auto; }
+
 .dropzone {
   border: 2px dashed var(--border);
   border-radius: 8px;

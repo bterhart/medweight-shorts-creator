@@ -34,6 +34,12 @@ yet against live Manus/ElevenLabs/Anthropic accounts.
   library voices (see the voice dropdown in `ui/`). Need to support voices we've cloned/created ourselves
   in ElevenLabs, not just the defaults — likely means accepting an arbitrary voice ID rather than only the
   presets baked into the UI.
-- **Custom intro/outro clips.** Rendering only assembles the deck's own slides. We already have intro and
-  outro clips produced separately; need a UI toggle (per short, at render time) to prepend/append them to
-  the render, and the corresponding support in `render/render.py` and the Fargate render path.
+
+## Recently added
+
+- **Custom intro/outro clips.** Each short's render controls now have "Include intro"/"Include outro"
+  toggles. The clips themselves (`intro.mp4`, `outro.mp4`) are fixed, non-job-specific files that must be
+  placed at `data/assets/intro.mp4` and `data/assets/outro.mp4` on the cPanel host (see
+  `docs/deployment.md`) — not committed to the repo. When a render requests one, `backend/fargate_client.py`
+  uploads it to S3 for the Fargate task to fetch; `render/render.py` letterboxes it to the render's
+  resolution and concatenates it (keeping its own audio) before/after the slideshow.

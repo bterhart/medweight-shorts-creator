@@ -26,8 +26,8 @@ from pathlib import Path
 
 import numpy as np
 from moviepy import (
-    ImageClip, ColorClip, VideoClip, CompositeVideoClip,
-    AudioFileClip, CompositeAudioClip, vfx, afx,
+    ImageClip, ColorClip, VideoClip, VideoFileClip, CompositeVideoClip,
+    AudioFileClip, CompositeAudioClip, concatenate_videoclips, vfx, afx,
 )
 
 
@@ -43,6 +43,18 @@ def fit_image_clip(image_path, duration, target_w, target_h):
     img = img.resized(scale).with_duration(duration).with_position("center")
     bg = ColorClip(size=(target_w, target_h), color=(0, 0, 0)).with_duration(duration)
     return CompositeVideoClip([bg, img], size=(target_w, target_h)).with_duration(duration)
+
+
+def fit_video_clip(video_path, target_w, target_h):
+    """Scale a fixed intro/outro clip to fit within the frame (letterboxed on
+    black), centered - same treatment as fit_image_clip, but keeps the
+    clip's own audio and runs for its own duration instead of one we pick."""
+    clip = VideoFileClip(video_path)
+    scale = min(target_w / clip.w, target_h / clip.h)
+    resized = clip.resized(scale).with_position("center")
+    bg = ColorClip(size=(target_w, target_h), color=(0, 0, 0)).with_duration(clip.duration)
+    composed = CompositeVideoClip([bg, resized], size=(target_w, target_h)).with_duration(clip.duration)
+    return composed.with_audio(clip.audio) if clip.audio else composed
 
 
 def wipe_mask_clip(w, h, transition_duration, total_duration, direction="left-to-right"):
@@ -112,7 +124,7 @@ def compute_starts(segments, overlap):
     return starts, t
 
 
-def render(job, transition_override=None, resolution_override=None):
+def render(job, transition_override=None, resolution_override=None, intro_path=None, outro_path=None):
     transition = dict(job["params"]["transition"])
     if transition_override:
         transition.update(transition_override)
@@ -162,6 +174,15 @@ def render(job, transition_override=None, resolution_override=None):
         final_audio = CompositeAudioClip(audio_layers).with_duration(total_duration)
         final_video = final_video.with_audio(final_audio)
 
+    clips = []
+    if intro_path:
+        clips.append(fit_video_clip(intro_path, target_w, target_h))
+    clips.append(final_video)
+    if outro_path:
+        clips.append(fit_video_clip(outro_path, target_w, target_h))
+    if len(clips) > 1:
+        final_video = concatenate_videoclips(clips)
+
     return final_video, ttype, resolution
 
 
@@ -174,6 +195,8 @@ def main():
     parser.add_argument("--min-slide-seconds", type=float)
     parser.add_argument("--resolution")
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--intro-path", help="Local path to a fixed intro clip to prepend")
+    parser.add_argument("--outro-path", help="Local path to a fixed outro clip to append")
     args = parser.parse_args()
 
     job_dir = Path(args.data_dir) / "jobs" / args.job_id
@@ -196,7 +219,10 @@ def main():
     if args.min_slide_seconds is not None:
         transition_override["minSlideSeconds"] = args.min_slide_seconds
 
-    final_video, ttype, resolution = render(job, transition_override or None, args.resolution)
+    final_video, ttype, resolution = render(
+        job, transition_override or None, args.resolution,
+        intro_path=args.intro_path, outro_path=args.outro_path,
+    )
 
     out_dir = job_dir / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
