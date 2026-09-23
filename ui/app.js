@@ -35,6 +35,7 @@ const state = {
   jobId: null,
   pollTimer: null,
   currentJob: null,
+  textFields: [], // { textArea, original } for every editable segment currently on screen
 };
 
 function getApiBase() {
@@ -51,6 +52,31 @@ function showError(el, message) {
   el.textContent = message;
   el.hidden = !message;
 }
+
+// ---------- unsaved-edit guard ----------
+// Every action that refreshes the review (render, save, delete, image swap,
+// add, create short, switch job) rebuilds all cards, which would silently
+// discard narration typed into any textarea but not yet saved. Dirty state
+// is computed on demand against each segment's saved script - no event
+// tracking to get out of sync.
+function unsavedTextFields(except) {
+  return state.textFields.filter((f) =>
+    f.textArea !== except && f.textArea.isConnected && f.textArea.value.trim() !== f.original.trim());
+}
+
+function confirmDiscardUnsaved(except) {
+  const n = unsavedTextFields(except).length;
+  if (!n) return true;
+  return window.confirm(
+    `${n} slide${n === 1 ? " has" : "s have"} unsaved narration edits that won't be kept. Continue anyway?`);
+}
+
+window.addEventListener("beforeunload", (e) => {
+  if (unsavedTextFields().length) {
+    e.preventDefault();
+    e.returnValue = "";
+  }
+});
 
 // ---------- settings ----------
 $("settings-toggle").addEventListener("click", () => {
@@ -313,6 +339,7 @@ function showReview(job) {
 function renderShortsList(job, slidesById) {
   const container = $("shorts-list");
   container.innerHTML = "";
+  state.textFields = [];
   const shorts = [...(job.shorts || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   for (const short of shorts) {
     container.appendChild(buildShortCard(job, short, slidesById));
@@ -365,6 +392,7 @@ function buildEditableSegment(job, short, n, slidesById, editable) {
     textArea.rows = 3;
     textArea.value = n.script;
     body.appendChild(textArea);
+    state.textFields.push({ textArea, original: n.script });
 
     const actions = document.createElement("div");
     actions.className = "field-row segment-actions";
@@ -377,6 +405,7 @@ function buildEditableSegment(job, short, n, slidesById, editable) {
       const text = textArea.value.trim();
       if (!text) { showError(errorEl, "Narration text can't be empty."); return; }
       if (text === n.script) return;
+      if (!confirmDiscardUnsaved(textArea)) return;
       saveSegmentText(short.shortId, n.sequenceIndex, text, errorEl);
     });
 
@@ -393,6 +422,7 @@ function buildEditableSegment(job, short, n, slidesById, editable) {
     }
     deckPicker.addEventListener("change", () => {
       if (!deckPicker.value) return;
+      if (!confirmDiscardUnsaved()) { deckPicker.value = ""; return; }
       replaceSegmentImage(short.shortId, n.sequenceIndex, { sourceSlideId: deckPicker.value }, errorEl);
       deckPicker.value = "";
     });
@@ -406,6 +436,7 @@ function buildEditableSegment(job, short, n, slidesById, editable) {
     uploadInput.hidden = true;
     uploadInput.addEventListener("change", () => {
       if (!uploadInput.files.length) return;
+      if (!confirmDiscardUnsaved()) { uploadInput.value = ""; return; }
       replaceSegmentImage(short.shortId, n.sequenceIndex, { file: uploadInput.files[0] }, errorEl);
       uploadInput.value = "";
     });
@@ -416,6 +447,7 @@ function buildEditableSegment(job, short, n, slidesById, editable) {
     deleteBtn.className = "secondary-btn";
     deleteBtn.textContent = "Delete slide";
     deleteBtn.addEventListener("click", () => {
+      if (!confirmDiscardUnsaved(textArea)) return;
       if (!window.confirm("Delete this slide from the short?")) return;
       deleteSegment(short.shortId, n.sequenceIndex, errorEl);
     });
@@ -463,6 +495,9 @@ function buildAddSegmentForm(short) {
   const textArea = document.createElement("textarea");
   textArea.rows = 2;
   textArea.placeholder = "Narration for the new slide";
+  // A draft here has nothing "saved" to compare against, so any non-empty
+  // text counts as unsaved work for the guard.
+  state.textFields.push({ textArea, original: "" });
 
   const fileInput = document.createElement("input");
   fileInput.type = "file";
@@ -481,6 +516,7 @@ function buildAddSegmentForm(short) {
     const text = textArea.value.trim();
     if (!text) { showError(errorEl, "Narration text is required."); return; }
     if (!fileInput.files.length) { showError(errorEl, "An image is required."); return; }
+    if (!confirmDiscardUnsaved(textArea)) return;
     addSegment(short.shortId, Number(position.value), text, fileInput.files[0], errorEl);
   });
 
@@ -667,10 +703,12 @@ function buildShortCard(job, short, slidesById) {
   renderBtn.className = "primary-btn";
   renderBtn.textContent = short.phase === "rendering" ? "Rendering…" : "Render video";
   renderBtn.disabled = short.phase === "rendering" || Boolean(job.activeShortId);
-  renderBtn.addEventListener("click", () =>
+  renderBtn.addEventListener("click", () => {
+    if (!confirmDiscardUnsaved()) return;
     triggerShortRender(
       short.shortId, transitionType.value, aspect.value, quality.value,
-      introToggle.input.checked, outroToggle.input.checked, errorEl));
+      introToggle.input.checked, outroToggle.input.checked, errorEl);
+  });
 
   controls.append(transitionType, aspect, quality, renderBtn);
   card.appendChild(controls);
@@ -717,6 +755,7 @@ $("create-short-btn").addEventListener("click", async () => {
     showError($("create-short-error"), "Topic is required.");
     return;
   }
+  if (!confirmDiscardUnsaved()) return;
 
   $("create-short-btn").disabled = true;
   $("create-short-status").hidden = false;
@@ -754,6 +793,8 @@ $("create-short-btn").addEventListener("click", async () => {
 // Not non-destructive by design - this abandons the current job entirely
 // rather than trying to preserve/resume it.
 $("back-btn").addEventListener("click", () => {
+  if (!confirmDiscardUnsaved()) return;
+  state.textFields = []; // the old cards stay in the (hidden) DOM - don't let them re-trigger the guard
   clearInterval(state.pollTimer);
   state.jobId = null;
   state.currentJob = null;
@@ -878,6 +919,8 @@ $("job-picker").addEventListener("change", async () => {
   const jobId = $("job-picker").value;
   showError($("job-picker-error"), "");
   if (!jobId) return;
+  if (!confirmDiscardUnsaved()) { $("job-picker").value = state.jobId || ""; return; }
+  state.textFields = [];
 
   clearInterval(state.pollTimer);
   state.jobId = jobId;
