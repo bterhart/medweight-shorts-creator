@@ -42,8 +42,13 @@ Serve `ui/` as static files any way you like (it's just three files) and open `i
    it back onto whichever original slides it actually covers - often a subset, sometimes just a few slides
    out of a large deck. Once a short reaches `ready_for_render`, its card gets its own transition/output
    controls and **Render video** button; the rendered video and download link appear inline on that short's
-   card once done (the link is a presigned S3 URL that the status endpoint re-signs on every poll, so it
-   stays valid however long the page sits open or the job is revisited). From that point each segment on the card is editable: rewrite its narration text (**Save
+   card once done (the link is a presigned S3 URL that the status endpoint re-signs on every poll, and the
+   player fetches a fresh one if its link has expired, so it stays valid however long the page sits open
+   or the job is revisited). Each segment has a **Play narration** button that plays its audio through
+   one shared player rather than one `<audio>` per segment - Chrome refuses new media players (the
+   rendered video included) once a page holds 1000, and polling rebuilds these cards every 3s while a short
+   is processing, so per-segment players piled up until the video was refused. From that point each
+   segment on the card is editable: rewrite its narration text (**Save
    text** — resynthesizes just that segment's audio, nothing else), swap its image (a deck-slide picker or
    **Upload image…**), **Delete slide**, or use the **Add a slide** form to insert a new segment (text + image)
    at any position. A previously rendered preview stays visible after an edit, flagged as stale, until you

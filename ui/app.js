@@ -35,6 +35,8 @@ const state = {
   pollTimer: null,
   currentJob: null,
   textFields: [], // { textArea, original } for every editable segment currently on screen
+  mediaEls: [], // every <video> the shorts list currently owns - released on rebuild, see releaseMediaElements
+  audioPlayer: null, // the one shared <audio> for segment narration, moved to whichever segment is playing
 };
 
 function getApiBase() {
@@ -76,6 +78,57 @@ window.addEventListener("beforeunload", (e) => {
     e.returnValue = "";
   }
 });
+
+// ---------- media players ----------
+// Chrome caps a page at 1000 live media players on desktop (75 on mobile;
+// crbug.com/1144736 - measured at exactly 1000 in headless Chromium). Every
+// status poll while a short is mid-pipeline rebuilds all cards, and a
+// dropped <audio>/<video> keeps its player until garbage collection gets to
+// it - so a 4-minute render with a 10-segment short discarded ~800 players
+// per render and, once a page had sat through a couple of renders, the
+// freshly rendered <video> was refused ("Blocked attempt to create a
+// WebMediaPlayer"). Two rules keep the count bounded: release players
+// explicitly on every rebuild, and give segment narration one shared
+// <audio> instead of one per segment.
+function releaseMediaElements() {
+  const els = state.mediaEls;
+  if (state.audioPlayer) els.push(state.audioPlayer);
+  for (const el of els) {
+    el.pause();
+    el.removeAttribute("src"); // removeAttribute, not src="": the latter fires an error event
+    el.load(); // frees the player now instead of at GC time
+  }
+  state.mediaEls = [];
+}
+
+function playNarration(afterEl, url) {
+  if (!state.audioPlayer) {
+    state.audioPlayer = document.createElement("audio");
+    state.audioPlayer.controls = true;
+  }
+  const player = state.audioPlayer;
+  afterEl.after(player); // moving the element keeps its single player; no new one is created
+  player.src = url;
+  player.play().catch(() => {}); // autoplay refusal just leaves the controls for a manual click
+}
+
+// A presigned link expires an hour after the status read that produced it.
+// The API re-signs on every read, so on a load error fetch the job once and
+// swap in the fresh link - covers a page left open past the hour.
+async function refreshVideoSource(video, shortId) {
+  try {
+    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/status`);
+    if (!res.ok) return;
+    const job = await res.json();
+    const short = (job.shorts || []).find((s) => s.shortId === shortId);
+    const url = short && short.render && short.render.outputUrl;
+    if (!url || !video.isConnected) return;
+    video.src = url;
+    video.load();
+  } catch (_) {
+    // leave it; a page reload gets a fresh link anyway
+  }
+}
 
 // ---------- settings ----------
 $("settings-toggle").addEventListener("click", () => {
@@ -344,6 +397,7 @@ function showReview(job) {
 // ---------- shorts: create, list, render ----------
 function renderShortsList(job, slidesById) {
   const container = $("shorts-list");
+  releaseMediaElements();
   container.innerHTML = "";
   state.textFields = [];
   const shorts = [...(job.shorts || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
@@ -469,10 +523,12 @@ function buildEditableSegment(job, short, n, slidesById, editable) {
 
   const audio = (short.audio || []).find((a) => a.sequenceIndex === n.sequenceIndex);
   if (audio) {
-    const audioEl = document.createElement("audio");
-    audioEl.controls = true;
-    audioEl.src = fileUrl(audio.path);
-    body.appendChild(audioEl);
+    const playBtn = document.createElement("button");
+    playBtn.type = "button";
+    playBtn.className = "secondary-btn play-narration-btn";
+    playBtn.textContent = "Play narration";
+    playBtn.addEventListener("click", () => playNarration(playBtn, fileUrl(audio.path)));
+    body.appendChild(playBtn);
   }
 
   body.appendChild(errorEl);
@@ -660,6 +716,8 @@ function buildShortCard(job, short, slidesById) {
     const video = document.createElement("video");
     video.controls = true;
     video.src = short.render.outputUrl;
+    video.addEventListener("error", () => refreshVideoSource(video, short.shortId), { once: true });
+    state.mediaEls.push(video);
     const download = document.createElement("a");
     download.className = "primary-btn";
     download.href = short.render.outputUrl;
@@ -806,6 +864,7 @@ $("create-short-btn").addEventListener("click", async () => {
 $("back-btn").addEventListener("click", () => {
   if (!confirmDiscardUnsaved()) return;
   state.textFields = []; // the old cards stay in the (hidden) DOM - don't let them re-trigger the guard
+  releaseMediaElements(); // ...and don't let their players count against Chrome's cap either
   clearInterval(state.pollTimer);
   state.jobId = null;
   state.currentJob = null;
