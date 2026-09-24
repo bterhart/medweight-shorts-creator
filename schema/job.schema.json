@@ -247,7 +247,10 @@
             "description": "This short's own render state - independent of every other short's.",
             "properties": {
               "renderedAt": { "type": ["string", "null"], "format": "date-time" },
-              "outputUrl": { "type": ["string", "null"] },
+              "outputUrl": {
+                "type": ["string", "null"],
+                "description": "Presigned S3 GET URL written by worker.run_render at completion (valid one hour). GET /jobs/<id>/status re-signs it (and each history entry's) on every read via fargate_client.refresh_output_urls, so the UI never sees an expired link; the stored value is only the marker that a finished render exists. Cleared by POST .../render so a stale preview disappears immediately."
+              },
               "renderCount": { "type": "integer", "default": 0, "description": "Monotonic across the short's life - never reset, so a replacement render's video-NN.mp4 never shares a name with the one being deleted." },
               "staleRenderCount": {
                 "type": ["integer", "null"],

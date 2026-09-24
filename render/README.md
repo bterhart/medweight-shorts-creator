@@ -38,7 +38,9 @@ above (`slides`/`narration`/`audio`/`params`), where `narration` is that short's
 carry a `customImagePath` (its image was replaced with an upload, or it was added post-review); when set,
 `build_segments` uses it instead of resolving `slideId` against `slides`. There, unlike the CLI path
 above, a re-render replaces the previous one: `POST .../render` clears the stale preview and the worker
-deletes the old `video-NN.mp4` from S3 before dispatching the new render.
+deletes the old `video-NN.mp4` from S3 before dispatching the new render. The finished video is served to the
+UI through a presigned S3 URL; the worker stores one at completion and `GET /jobs/<id>/status` re-signs it on
+every read, so the preview never expires in the UI.
 
 ## How the transitions work
 

@@ -21,8 +21,17 @@ INTRO_ASSET_KEY = "assets/intro.mp4"
 OUTRO_ASSET_KEY = "assets/outro.mp4"
 
 
+_s3_client = None
+
+
 def _s3():
-    return boto3.client("s3", region_name=config.AWS_REGION)
+    """One client per process: Flask calls this on every status poll (to
+    re-sign preview URLs), and building a boto3 client is the expensive
+    part of that, not the signing itself."""
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client("s3", region_name=config.AWS_REGION)
+    return _s3_client
 
 
 def _upload_shared_asset(s3, filename: str, key: str) -> None:
@@ -164,6 +173,28 @@ def presigned_output_url(job_id: str, short_id: str, render_count: int, expires_
         Params={"Bucket": config.RENDER_S3_BUCKET, "Key": _output_key(job_id, short_id, render_count)},
         ExpiresIn=expires_in,
     )
+
+
+def refresh_output_urls(job: dict) -> dict:
+    """Re-signs every finished render's outputUrl on the job in place and
+    returns it. The URL the worker stores at render completion expires an
+    hour later, after which the UI's preview and download link silently
+    fail; the status endpoint calls this on every read so what the UI gets
+    is always freshly signed. Signing is local (no AWS round trip). If it
+    fails - most likely the API process lacks the AWS keys - the stored URLs
+    are left as they are rather than breaking status polling."""
+    job_id = job["jobId"]
+    for short in job.get("shorts", []):
+        render_state = short.get("render") or {}
+        try:
+            if render_state.get("outputUrl"):
+                render_state["outputUrl"] = presigned_output_url(job_id, short["shortId"], render_state["renderCount"])
+            for h in render_state.get("history", []):
+                if h.get("outputUrl"):
+                    h["outputUrl"] = presigned_output_url(job_id, short["shortId"], h["renderCount"])
+        except Exception as e:
+            print(f"warning: could not re-sign output URLs for short {short.get('shortId')}: {type(e).__name__}: {e}")
+    return job
 
 
 def delete_output(job_id: str, short_id: str, render_count: int) -> None:

@@ -13,6 +13,7 @@ from flask import Flask, jsonify, request, send_file, abort
 
 import config
 import db
+import fargate_client
 import pipeline
 
 app = Flask(__name__)
@@ -109,7 +110,9 @@ def job_status(job_id):
     job = db.get_job(job_id)
     if not job:
         return jsonify({"error": "not found"}), 404
-    return jsonify(job)
+    # Stored preview URLs are presigned at render time and expire an hour
+    # later; re-sign them on every read so the UI never shows a dead link.
+    return jsonify(fargate_client.refresh_output_urls(job))
 
 
 @app.post("/jobs/<job_id>/shorts")
@@ -201,7 +204,8 @@ def trigger_short_render(job_id, short_id):
     render_state = short.setdefault("render", {})
     # A re-render replaces the previous render rather than sitting beside
     # it: drop the stale preview from the UI now, and leave its number for
-    # the worker to delete from S3 on dispatch (Flask never talks to AWS).
+    # the worker to delete from S3 on dispatch (Flask only ever signs S3
+    # URLs locally - see job_status - never calls AWS).
     if render_state.get("outputUrl"):
         render_state["staleRenderCount"] = render_state.get("renderCount", 0)
         render_state["outputUrl"] = None

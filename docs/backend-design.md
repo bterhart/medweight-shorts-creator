@@ -22,9 +22,13 @@ under `DATA_DIR/jobs/<id>/`; only metadata moved into the database.
 ## Request/response split
 
 Flask (`backend/app.py`) only ever does fast, synchronous work: validate the request, save uploaded files,
-write a `queued` row, return the job ID — or read a row back for status. It never calls Manus/ElevenLabs/
-Anthropic or runs ffmpeg itself, because Passenger-managed WSGI processes aren't a good place for
-multi-minute work to run inline.
+write a `queued` row, return the job ID — or read a row back for status. It never calls ElevenLabs/
+Anthropic/AWS or runs ffmpeg itself, because Passenger-managed WSGI processes aren't a good place for
+multi-minute work to run inline. The one AWS-adjacent thing it does is local: `GET /jobs/<id>/status`
+re-signs every finished render's `outputUrl` (`fargate_client.refresh_output_urls`) before returning the job,
+because the URL the worker stored at render time is a presigned S3 link that expires after an hour and the
+UI would otherwise show a dead preview. Presigning needs the same `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`
+the worker uses, which both processes already load from `backend/.env` via `config.py`.
 
 The actual pipeline runs in `backend/worker.py`, meant to be invoked by cron every minute:
 
