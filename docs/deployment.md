@@ -115,6 +115,33 @@ committed). A render only uploads whichever of the two it actually requests to S
 (`backend/fargate_client.py`) for the Fargate task to fetch; leave a toggle off if its file isn't there yet,
 since requesting one that's missing fails that render with a clear "not present" error.
 
+## Rebuilding the Fargate render image
+
+`render/render.py` and `render/ecs_task.py` never run on the cPanel host - they run inside the Docker
+image the ECS task definition `chatbot-shorts-render` points at
+(`377056770382.dkr.ecr.us-east-1.amazonaws.com/chatbot-shorts-render:latest`). **A `git pull` on cPanel
+does not update that image.** Whenever a commit touches `render/render.py`, `render/ecs_task.py`,
+`render/requirements.txt` or `render/Dockerfile`, rebuild and push it, or Fargate keeps rendering with the
+old code (learned the hard way: the intro/outro and custom-image features shipped on 23 Sept 2026 against an
+image built on 12 Sept, which silently ignored them and failed on added slides).
+
+Build in **AWS CloudShell** (region N. Virginia / us-east-1) - it has Docker and an already-signed-in AWS
+CLI, and `~/medweight-shorts-creator` persists between CloudShell sessions. One step at a time:
+
+```
+cd ~/medweight-shorts-creator && git pull && git log --oneline -1
+docker build -f render/Dockerfile -t chatbot-shorts-render:latest . 2>&1 | tail -5
+docker run --rm --entrypoint grep chatbot-shorts-render:latest -c "customImagePath\|intro" /app/render.py /app/ecs_task.py
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 377056770382.dkr.ecr.us-east-1.amazonaws.com && docker tag chatbot-shorts-render:latest 377056770382.dkr.ecr.us-east-1.amazonaws.com/chatbot-shorts-render:latest && docker push 377056770382.dkr.ecr.us-east-1.amazonaws.com/chatbot-shorts-render:latest 2>&1 | tail -3
+```
+
+The `grep` line is a sanity check that the freshly built image contains the code you expect (both counts
+above zero) before anything is pushed. The push ends with `latest: digest: sha256:...`. Nothing else
+changes: the task definition references the `:latest` tag, so the next render task pulls the new image
+automatically. The previous image stays in ECR under its digest if you ever need to roll back (retag it as
+`latest`). To confirm which image a render used, ECR → the repository → the image's "Last recorded pull
+time".
+
 ## 9. Verifying a real end-to-end run
 
 1. Submit a job through the UI (or `curl -F params=... -F srt=@... -F pdf_0=@...` directly against

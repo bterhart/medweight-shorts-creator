@@ -32,7 +32,9 @@ prepend/append, letterboxed to the target resolution, keeping their own audio).
 Output goes to `data/jobs/<jobId>/output/video-NN.mp4` (`NN` increments on every render — old renders
 are kept, not overwritten).
 
-In production the same `render()` function runs inside the Fargate container (`ecs_task.py`) against a
+In production the same `render()` function runs inside the Fargate container (`ecs_task.py`) - a Docker
+image that must be rebuilt and pushed to ECR after any change to the files in this directory; see
+"Rebuilding the Fargate render image" in `docs/deployment.md`. It renders against a
 per-short render view that `backend/fargate_client.py` uploads to S3 — shaped like the job-level input
 above (`slides`/`narration`/`audio`/`params`), where `narration` is that short's `script`. A segment may
 carry a `customImagePath` (its image was replaced with an upload, or it was added post-review); when set,
