@@ -1,8 +1,10 @@
 # Chatbot Shorts
 
-Turns a video transcript (`.srt`) plus its presentation slides (`.pdf`) into a short narrated video:
-Claude aligns the transcript to the slides and condenses the narration to a target length, ElevenLabs voices
-it, and the slides are assembled into a video with a chosen transition.
+Turns a presentation into short narrated videos. Two ways in: a video transcript (`.srt`) plus the slide
+deck (`.pdf`), where Claude aligns the transcript to the slides and cleans it; or a `.pptx` whose speaker
+notes are the narration, plus that deck's PDF export, where the notes are used as written and nothing needs
+aligning. Either way Claude then condenses the narration to a target length per short, ElevenLabs voices it,
+and the slides are assembled into a video with a chosen transition.
 
 ## Layout
 
@@ -38,6 +40,13 @@ newest piece and is unverified against a real deck as of this change: its `worke
 
 ## Recently added
 
+- **Speaker-notes intake.** Step 1 has a source switch. "PPTX with speaker notes + its PDF export" takes
+  the deck itself and the PDF exported from it: each visible slide's notes become that slide's narration,
+  verbatim, paired to PDF pages by position (hidden slides are excluded on both sides, and a count
+  mismatch fails the job with both numbers). No transcript, so no alignment or cleaning and no Claude
+  call - prepare takes seconds. Slides without notes are left out and listed on the review screen.
+  `python-pptx` is a new dependency. The PDF, not the PPTX, is what's rendered: PowerPoint's own export
+  keeps layout and fonts exactly, which a server-side conversion would not.
 - **Full-resolution slides.** Slide images are rasterised so their long edge is 3840 px (configurable,
   `SLIDE_IMAGE_LONG_EDGE_PX`) instead of a fixed 150 DPI, with a separate small rendition for the review
   UI, so vector content stays sharp at any output size. Intake audits every embedded bitmap's effective

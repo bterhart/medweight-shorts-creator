@@ -61,16 +61,25 @@ def fail_short(job: dict, short: dict, step: str, message: str, detail: str = ""
 
 
 def run_prepare_pipeline(job: dict) -> None:
+    """Two intake modes share the slide extraction and diverge after it.
+    'transcript' (the original): parse the SRT, align it to the slides with
+    Claude, clean the excerpts. 'notes': the PDF is the export of a PPTX
+    whose speaker notes are the narration - no transcript, so nothing to
+    align or clean; the notes are paired to pages by position and written
+    verbatim. Both end at the same ready_for_review shape."""
     job_dir = os.path.join(config.DATA_DIR, "jobs", job["jobId"])
+    notes_mode = job.get("inputMode") == "notes"
 
     try:
-        job["step"] = "parsing_srt"
-        with timed("parse_srt"):
-            srt_info = pipeline.parse_srt(job["sources"]["srt"]["path"])
-        job["sources"]["srt"].update(srt_info)
-        db.save_job(job)
+        if not notes_mode:
+            job["step"] = "parsing_srt"
+            with timed("parse_srt"):
+                srt_info = pipeline.parse_srt(job["sources"]["srt"]["path"])
+            job["sources"]["srt"].update(srt_info)
+            db.save_job(job)
 
         job["step"] = "extracting_pdfs"
+        db.save_job(job)
         slides_dir = os.path.join(job_dir, "slides")
         slides = []
         with timed("extract_pdf_slides"):
@@ -78,6 +87,17 @@ def run_prepare_pipeline(job: dict) -> None:
                 slides.extend(pipeline.extract_pdf_slides(pdf["path"], pdf["id"], slides_dir))
         job["slides"] = slides
         db.save_job(job)
+
+        if notes_mode:
+            job["step"] = "extracting_notes"
+            db.save_job(job)
+            with timed("extract_pptx_notes"):
+                notes = pipeline.extract_pptx_notes(job["sources"]["pptx"]["path"])
+                pipeline.narration_from_notes(job, notes)
+            job["phase"] = "ready_for_review"
+            job["step"] = "ready_for_review"
+            db.save_job(job)
+            return
 
         job["step"] = "aligning"
         db.save_job(job)

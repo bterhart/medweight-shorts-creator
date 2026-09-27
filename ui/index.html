@@ -35,6 +35,14 @@
       <h2>1. Upload &amp; configure</h2>
 
       <div class="field-group">
+        <label>Source</label>
+        <div class="field-row">
+          <label class="checkbox-field"><input type="radio" name="input-mode" value="transcript" checked /><span>Transcript (.srt) + slide PDF</span></label>
+          <label class="checkbox-field"><input type="radio" name="input-mode" value="notes" /><span>PPTX with speaker notes + its PDF export</span></label>
+        </div>
+      </div>
+
+      <div id="srt-group" class="field-group">
         <label>Transcript (.srt)</label>
         <div id="srt-dropzone" class="dropzone">
           <span class="dropzone-hint">Drag &amp; drop the .srt file here, or click to browse</span>
@@ -43,17 +51,29 @@
         <div id="srt-filename" class="file-chip" hidden></div>
       </div>
 
+      <div id="pptx-group" class="field-group" hidden>
+        <label>Presentation (.pptx) with speaker notes</label>
+        <div id="pptx-dropzone" class="dropzone">
+          <span class="dropzone-hint">Drag &amp; drop the .pptx file here, or click to browse</span>
+          <input id="pptx-input" type="file" accept=".pptx" hidden />
+        </div>
+        <div id="pptx-filename" class="file-chip" hidden></div>
+        <p class="hint">Each slide's speaker notes become its narration, word for word. Slides with no notes are left out.</p>
+      </div>
+
       <div class="field-group">
-        <label>Slide deck PDF(s)</label>
+        <label id="pdf-label">Slide deck PDF(s)</label>
         <div id="pdf-dropzone" class="dropzone">
-          <span class="dropzone-hint">Drag &amp; drop one or more PDFs here, or click to browse</span>
+          <span id="pdf-dropzone-hint" class="dropzone-hint">Drag &amp; drop one or more PDFs here, or click to browse</span>
           <input id="pdf-input" type="file" accept=".pdf" multiple hidden />
         </div>
         <ul id="pdf-list" class="pdf-list"></ul>
-        <p class="hint">Mark exactly one deck as <strong>Primary</strong> — the narrative is built from it first; other decks fill in only where the primary deck has no matching slide.</p>
+        <p id="pdf-hint-transcript" class="hint">Mark exactly one deck as <strong>Primary</strong> — the narrative is built from it first; other decks fill in only where the primary deck has no matching slide.</p>
+        <p id="pdf-hint-notes" class="hint" hidden>Export this PDF from the same PPTX, with image compression turned off. Notes pair to pages by position; hidden slides are left out of both, so the counts must match.</p>
       </div>
 
-      <p class="hint">Alignment runs against the full transcript and full slide deck, then this step cleans each slide's text (removing filler and personal references) - no target narration length to pick here. Shortening to a target duration is a separate, later step.</p>
+      <p id="prepare-hint-transcript" class="hint">Alignment runs against the full transcript and full slide deck, then this step cleans each slide's text (removing filler and personal references) - no target narration length to pick here. Shortening to a target duration is a separate, later step.</p>
+      <p id="prepare-hint-notes" class="hint" hidden>No alignment or cleaning in this mode - the notes are used as written, so preparing takes seconds and costs nothing. The narration style below is not applied to them; its saved prompts are still what shorts are written with.</p>
 
       <div class="field-group">
         <label for="narration-style">Narration style / expertise</label>
@@ -103,6 +123,7 @@
     <section id="review-section" class="panel" hidden>
       <h2>3. Review script &amp; slides</h2>
       <p class="hint">This is the full 1:1 slide-to-narration alignment — permanent for this job, never shortened or rewritten in place. Create as many shorts as you like from it below.</p>
+      <p id="review-notes-info" class="hint" hidden></p>
       <button id="back-btn" class="secondary-btn" type="button">&larr; Back to setup</button>
       <p class="hint">Going back starts a new submission — this won't resume or reuse the job you just prepared.</p>
       <div id="segment-list" class="segment-list"></div>

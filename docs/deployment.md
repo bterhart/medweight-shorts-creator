@@ -102,6 +102,22 @@ your own machine while testing). Open it, click **Settings**, set the webhook ba
 Flask app is reachable — e.g. `https://medweight.ca/chatbot-shorts` (no trailing slash; `app.js` appends
 `/jobs`, `/files`, etc. itself).
 
+## Pulling an update
+
+```
+cd /home/medweight/chatbot-shorts && git pull
+```
+
+Then, only if the pull touched `backend/requirements.txt` (e.g. `python-pptx` for speaker-notes intake):
+
+```
+/home/medweight/virtualenv/chatbot-shorts/backend/3.11/bin/pip install -r /home/medweight/chatbot-shorts/backend/requirements.txt
+```
+
+Then restart Passenger if `backend/` changed (`touch /home/medweight/chatbot-shorts/backend/tmp/restart.txt`);
+the cron worker picks up new code on its next tick by itself, and `ui/` changes need only a hard reload in the
+browser. A change under `render/` additionally needs the image rebuilt - see below.
+
 ## Intro/outro clips (optional)
 
 To enable the "Include intro"/"Include outro" toggles on a short's render controls, upload the two fixed

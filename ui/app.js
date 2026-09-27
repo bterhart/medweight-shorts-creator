@@ -9,15 +9,27 @@
 //   POST   {apiBase}/jobs/:jobId/shorts/:shortId/segments             insert a new segment
 //   GET  {apiBase}/files?path=...                        slide images/audio
 
-const STEP_ORDER = [
-  ["queued", "Queued"],
-  ["saving_inputs", "Saving uploaded files"],
-  ["parsing_srt", "Parsing transcript"],
-  ["extracting_pdfs", "Extracting slide images"],
-  ["aligning", "Aligning transcript to slides"],
-  ["cleaning_narration", "Cleaning narration text"],
-  ["ready_for_review", "Ready for review"],
-];
+// Prepare steps per intake mode (job.inputMode). Notes mode has no
+// transcript, so nothing to align or clean - the speaker notes are read
+// straight into the narration.
+const STEP_ORDERS = {
+  transcript: [
+    ["queued", "Queued"],
+    ["saving_inputs", "Saving uploaded files"],
+    ["parsing_srt", "Parsing transcript"],
+    ["extracting_pdfs", "Extracting slide images"],
+    ["aligning", "Aligning transcript to slides"],
+    ["cleaning_narration", "Cleaning narration text"],
+    ["ready_for_review", "Ready for review"],
+  ],
+  notes: [
+    ["queued", "Queued"],
+    ["saving_inputs", "Saving uploaded files"],
+    ["extracting_pdfs", "Extracting slide images"],
+    ["extracting_notes", "Reading speaker notes"],
+    ["ready_for_review", "Ready for review"],
+  ],
+};
 
 // Resolution is chosen at render time (Phase 2), not at intake - it doesn't
 // affect alignment/narration/voice, and defaulting low keeps iteration fast.
@@ -148,6 +160,29 @@ $("settings-save").addEventListener("click", () => {
   loadJobList();
 });
 
+// ---------- intake mode ----------
+function inputMode() {
+  return document.querySelector('input[name="input-mode"]:checked').value;
+}
+
+function applyInputMode() {
+  const notes = inputMode() === "notes";
+  $("srt-group").hidden = notes;
+  $("pptx-group").hidden = !notes;
+  $("pdf-label").textContent = notes ? "PDF export of that deck" : "Slide deck PDF(s)";
+  $("pdf-dropzone-hint").textContent = notes
+    ? "Drag & drop the deck's PDF export here, or click to browse"
+    : "Drag & drop one or more PDFs here, or click to browse";
+  $("pdf-input").multiple = !notes;
+  $("pdf-hint-transcript").hidden = notes;
+  $("pdf-hint-notes").hidden = !notes;
+  $("prepare-hint-transcript").hidden = notes;
+  $("prepare-hint-notes").hidden = !notes;
+  validateSetup();
+}
+
+document.querySelectorAll('input[name="input-mode"]').forEach((r) => r.addEventListener("change", applyInputMode));
+
 // ---------- SRT dropzone ----------
 let srtFile = null;
 setupDropzone($("srt-dropzone"), $("srt-input"), (files) => {
@@ -155,6 +190,16 @@ setupDropzone($("srt-dropzone"), $("srt-input"), (files) => {
   srtFile = files[0];
   $("srt-filename").textContent = srtFile.name;
   $("srt-filename").hidden = false;
+  validateSetup();
+});
+
+// ---------- PPTX dropzone (notes mode) ----------
+let pptxFile = null;
+setupDropzone($("pptx-dropzone"), $("pptx-input"), (files) => {
+  if (!files.length) return;
+  pptxFile = files[0];
+  $("pptx-filename").textContent = pptxFile.name;
+  $("pptx-filename").hidden = false;
   validateSetup();
 });
 
@@ -239,14 +284,19 @@ $("short-voice-preset").addEventListener("change", () => {
 // ---------- setup validation ----------
 function validateSetup() {
   // apiBase may legitimately be empty (UI served from the same origin as the webhooks)
-  const ok = Boolean(srtFile && state.pdfs.length > 0 && state.pdfs.some((p) => p.role === "primary"));
+  const hasPrimary = state.pdfs.some((p) => p.role === "primary");
+  const ok = inputMode() === "notes"
+    ? Boolean(pptxFile && state.pdfs.length === 1 && hasPrimary)   // one deck: notes pair to pages by position
+    : Boolean(srtFile && state.pdfs.length > 0 && hasPrimary);
   $("submit-btn").disabled = !ok;
 }
 
 // ---------- submit (Phase 1) ----------
 $("submit-btn").addEventListener("click", async () => {
   showError($("setup-error"), "");
+  const mode = inputMode();
   const params = {
+    inputMode: mode,
     // Duration and voice have no control here - they're chosen per short,
     // later, in Step 3 (see create-short-btn below).
     narrationStyle: $("narration-style").value.trim(),
@@ -255,13 +305,14 @@ $("submit-btn").addEventListener("click", async () => {
       transitionSeconds: Number($("transition-seconds").value),
       minSlideSeconds: Number($("min-slide-seconds").value),
     },
-    srtFilename: srtFile.name,
+    srtFilename: mode === "notes" ? null : srtFile.name,
     pdfs: state.pdfs.map((p, i) => ({ filename: p.filename, role: p.role, order: i, binaryKey: `pdf_${i}` })),
   };
 
   const form = new FormData();
   form.append("params", JSON.stringify(params));
-  form.append("srt", srtFile, srtFile.name);
+  if (mode === "notes") form.append("pptx", pptxFile, pptxFile.name);
+  else form.append("srt", srtFile, srtFile.name);
   state.pdfs.forEach((p, i) => form.append(`pdf_${i}`, p.file, p.filename));
 
   $("submit-btn").disabled = true;
@@ -274,7 +325,7 @@ $("submit-btn").addEventListener("click", async () => {
     $("setup-section").hidden = true;
     $("progress-section").hidden = false;
     $("progress-job-id").textContent = state.jobId;
-    renderStepList(data.step);
+    renderStepList(data.step, mode);
     startPolling("prepare");
     loadJobList();
   } catch (err) {
@@ -284,11 +335,12 @@ $("submit-btn").addEventListener("click", async () => {
   }
 });
 
-function renderStepList(currentStep) {
+function renderStepList(currentStep, mode) {
   const list = $("step-list");
   list.innerHTML = "";
-  const currentIndex = STEP_ORDER.findIndex(([key]) => key === currentStep);
-  STEP_ORDER.forEach(([key, label], i) => {
+  const steps = STEP_ORDERS[mode] || STEP_ORDERS.transcript;
+  const currentIndex = steps.findIndex(([key]) => key === currentStep);
+  steps.forEach(([key, label], i) => {
     const li = document.createElement("li");
     if (i < currentIndex) li.className = "done";
     else if (i === currentIndex) li.className = "active";
@@ -329,7 +381,7 @@ async function pollStatus() {
       return;
     }
 
-    renderStepList(job.step);
+    renderStepList(job.step, job.inputMode);
     if (job.phase === "failed") {
       clearInterval(state.pollTimer);
       showError($("progress-error"), job.error ? job.error.message : "Job failed.");
@@ -349,6 +401,16 @@ async function pollStatus() {
 // ---------- review (Phase 1 complete): permanent 1:1 narration ----------
 function showReview(job) {
   $("review-section").hidden = false;
+  const pptx = job.inputMode === "notes" && job.sources && job.sources.pptx;
+  $("review-notes-info").hidden = !pptx;
+  if (pptx) {
+    const skipped = pptx.slidesWithoutNotes || [];
+    $("review-notes-info").textContent =
+      `Narration taken verbatim from the speaker notes of ${pptx.filename}: ${pptx.narratedCount} of `
+      + `${pptx.slideCount - pptx.hiddenCount} visible slides had notes`
+      + (pptx.hiddenCount ? `, ${pptx.hiddenCount} hidden slide${pptx.hiddenCount === 1 ? "" : "s"} skipped` : "")
+      + (skipped.length ? `. Left out (no notes): ${skipped.join(", ")}.` : ".");
+  }
   const slidesById = Object.fromEntries(job.slides.map((s) => [s.slideId, s]));
   const alignmentBySeq = Object.fromEntries(job.alignment.map((a) => [a.sequenceIndex, a]));
 
@@ -881,9 +943,12 @@ $("back-btn").addEventListener("click", () => {
   state.currentJob = null;
   state.pdfs = [];
   srtFile = null;
+  pptxFile = null;
   $("srt-input").value = "";
+  $("pptx-input").value = "";
   $("pdf-input").value = "";
   $("srt-filename").hidden = true;
+  $("pptx-filename").hidden = true;
   renderPdfList();
   $("review-section").hidden = true;
   $("progress-section").hidden = true;
@@ -1047,7 +1112,7 @@ $("job-picker").addEventListener("change", async () => {
 
     if (job.phase === "failed") {
       $("progress-section").hidden = false;
-      renderStepList(job.step);
+      renderStepList(job.step, job.inputMode);
       showError($("progress-error"), job.error ? job.error.message : "Job failed.");
     } else if (job.phase === "condensing" || job.phase === "editing" || job.phase === "rendering") {
       // a short is mid-pipeline; job.phase always returns to ready_for_review
@@ -1068,6 +1133,6 @@ $("job-picker").addEventListener("change", async () => {
 });
 
 // initial state
-validateSetup();
+applyInputMode(); // also runs validateSetup()
 loadPrompts();
 loadJobList();

@@ -56,7 +56,11 @@ apply synchronously instead, the same fast/sync category as job creation and sta
 ## Pipeline steps (`backend/pipeline.py`)
 
 Same steps as the old n8n workflow, now as plain functions the worker calls in order, saving the job back
-to the DB after each one so status polls see live progress:
+to the DB after each one so status polls see live progress. `job.inputMode` picks the route through them:
+`transcript` (steps 1-4) or `notes` (step 2, then `extract_pptx_notes` + `narration_from_notes` in place of
+3-4: the PPTX's speaker notes are the narration and visible slide *i* is PDF page *i*, so `job.narration` is
+written verbatim with `job.alignment` left empty - no Claude call, seconds not minutes). Both routes end at
+the same `ready_for_review` shape, so everything from step 5 on is identical:
 
 1. `parse_srt` — cue/duration/full-text extraction, unchanged logic.
 2. `extract_pdf_slides` — **PyMuPDF (`pymupdf`/`fitz`) instead of poppler-utils.** Renders pages to PNG and

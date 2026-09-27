@@ -2,6 +2,7 @@ flask
 pymysql
 cryptography
 pymupdf
+python-pptx
 requests
 anthropic>=1
 boto3

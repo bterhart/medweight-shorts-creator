@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pymupdf
 import requests
+from pptx import Presentation
 
 import config
 import db
@@ -132,6 +133,58 @@ def extract_pdf_slides(pdf_path: str, pdf_id: str, slides_dir: str) -> list:
     finally:
         doc.close()
     return slides
+
+
+def extract_pptx_notes(pptx_path: str) -> list:
+    """Every slide's speaker notes, in deck order, hidden slides included
+    (flagged) so the caller can drop them the same way PowerPoint's PDF
+    export does. Notes come back verbatim, whitespace-trimmed."""
+    prs = Presentation(pptx_path)
+    out = []
+    for i, slide in enumerate(prs.slides):
+        notes = ""
+        if slide.has_notes_slide and slide.notes_slide.notes_text_frame is not None:
+            notes = slide.notes_slide.notes_text_frame.text
+        out.append({
+            "slideNumber": i + 1,
+            "hidden": slide._element.get("show") == "0",  # python-pptx has no public accessor for this
+            "notes": notes.strip(),
+        })
+    return out
+
+
+def narration_from_notes(job: dict, notes: list) -> None:
+    """Notes mode's stand-in for alignment + cleaning: the speaker notes ARE
+    the narration, and the slide each belongs to is given by position - the
+    PDF is the export of this same deck, so visible slide i is page i.
+    Writes job["narration"] verbatim (one segment per slide that has notes,
+    the rest left out), leaves job["alignment"] empty, and records the
+    counts on sources.pptx for the review UI. Permanent from here on, same
+    as clean_narration's output."""
+    visible = [n for n in notes if not n["hidden"]]
+    slides = job["slides"]
+    if len(visible) != len(slides):
+        raise RuntimeError(
+            f"the PPTX has {len(visible)} visible slides ({len(notes) - len(visible)} hidden) but the PDF has "
+            f"{len(slides)} pages - the PDF must be the export of this exact deck (hidden slides are left out "
+            f"of both, so they can't be the cause)"
+        )
+    narration, without_notes = [], []
+    for slide, note in zip(slides, visible):
+        if note["notes"]:
+            narration.append({"sequenceIndex": len(narration), "slideId": slide["slideId"], "script": note["notes"]})
+        else:
+            without_notes.append(slide["slideId"])
+    if not narration:
+        raise RuntimeError("no slide in the PPTX has speaker notes - there is nothing to narrate")
+    job["narration"] = narration
+    job["alignment"] = []
+    job["sources"]["pptx"].update({
+        "slideCount": len(notes),
+        "hiddenCount": len(notes) - len(visible),
+        "narratedCount": len(narration),
+        "slidesWithoutNotes": without_notes,
+    })
 
 
 def _claude_json(prompt: str, what: str) -> dict:

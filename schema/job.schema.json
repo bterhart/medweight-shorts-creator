@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://chatbot-shorts/schema/job.schema.json",
   "title": "Job",
-  "description": "Persisted state for one transcript+slides video job. Stored as the `data` JSON column of one row in the `jobs` MySQL table (see backend/schema.sql) and treated as the single source of truth for backend/worker.py and the UI's status polling.",
+  "description": "Persisted state for one video job - a transcript plus slide PDF, or (inputMode 'notes') a PPTX's speaker notes plus that deck's PDF export. Stored as the `data` JSON column of one row in the `jobs` MySQL table (see backend/schema.sql) and treated as the single source of truth for backend/worker.py and the UI's status polling.",
   "type": "object",
   "required": ["jobId", "createdAt", "updatedAt", "phase", "step", "params", "sources"],
   "properties": {
@@ -14,6 +14,12 @@
       "type": "string",
       "description": "Coarse pipeline phase. 'prepare' covers alignment against the full transcript/slide deck plus narration cleaning (filler and personal references removed - no duration budget applied, never touched again after this). 'ready_for_review' is both the human-reviewable slide+text checkpoint prepare stops at AND the job's permanent resting state afterward - a job can sit here indefinitely, spawning any number of 'shorts' (see below). 'condensing'/'editing'/'rendering' mean whichever short is named by activeShortId is currently mid-pipeline; the job always returns to 'ready_for_review' once that short finishes or fails, regardless of the short's own outcome. 'ready_for_render'/'done' are legacy values from before shorts existed (a job itself is never rendered directly anymore) and are only expected on jobs created before this change.",
       "enum": ["prepare", "ready_for_review", "condensing", "editing", "ready_for_render", "rendering", "done", "failed"]
+    },
+    "inputMode": {
+      "type": "string",
+      "enum": ["transcript", "notes"],
+      "default": "transcript",
+      "description": "'transcript': an .srt aligned to the slide PDF by Claude, then cleaned (the original flow). 'notes': a PPTX whose speaker notes are the narration, plus the PDF export of that same deck for the images; prepare pairs visible slide i with page i and writes narration verbatim - no alignment, no cleaning, no Claude call. Absent on jobs created before the mode existed, which are 'transcript'."
     },
     "activeShortId": {
       "type": ["string", "null"],
@@ -27,6 +33,7 @@
         "saving_inputs",
         "parsing_srt",
         "extracting_pdfs",
+        "extracting_notes",
         "aligning",
         "cleaning_narration",
         "ready_for_review",
@@ -79,10 +86,11 @@
 
     "sources": {
       "type": "object",
-      "required": ["srt", "pdfs"],
+      "required": ["pdfs"],
       "properties": {
         "srt": {
-          "type": "object",
+          "type": ["object", "null"],
+          "description": "null in notes mode.",
           "properties": {
             "filename": { "type": "string" },
             "path": { "type": "string" },
@@ -91,9 +99,21 @@
             "fullText": { "type": "string" }
           }
         },
+        "pptx": {
+          "type": ["object", "null"],
+          "description": "Notes mode only (null otherwise): the uploaded deck. The counts are filled in during 'extracting_notes' for the review UI.",
+          "properties": {
+            "filename": { "type": "string" },
+            "path": { "type": "string" },
+            "slideCount": { "type": "integer", "description": "All slides in the PPTX, hidden included." },
+            "hiddenCount": { "type": "integer", "description": "Hidden slides, skipped - PowerPoint leaves them out of the PDF export too." },
+            "narratedCount": { "type": "integer", "description": "Visible slides that had speaker notes and so became narration segments." },
+            "slidesWithoutNotes": { "type": "array", "items": { "type": "string" }, "description": "slideIds of visible slides with empty notes - left out of job.narration, so no short can pick them." }
+          }
+        },
         "pdfs": {
           "type": "array",
-          "description": "Exactly one entry must have role='primary'. UI enforces this with a radio control; a single uploaded PDF is auto-assigned primary.",
+          "description": "Exactly one entry must have role='primary' (notes mode: exactly one PDF, the deck's export). UI enforces this with a radio control; a single uploaded PDF is auto-assigned primary.",
           "items": {
             "type": "object",
             "required": ["id", "filename", "path", "role", "order"],
@@ -158,7 +178,7 @@
 
     "narration": {
       "type": "array",
-      "description": "Populated once, during 'cleaning_narration', from job.alignment's raw excerpts (kept untouched alongside this, so cleaning is never irreversible) - full-length, cleaned of filler/personal references, not sized to any duration. Permanent for the life of the job: nothing after this point ever mutates it. This is the 1:1 slide-to-narration pool every short (below) is built from.",
+      "description": "Populated once: during 'cleaning_narration' from job.alignment's raw excerpts (kept untouched alongside this, so cleaning is never irreversible), or in notes mode during 'extracting_notes' straight from the PPTX's speaker notes, verbatim, with job.alignment left empty - full-length, cleaned of filler/personal references, not sized to any duration. Permanent for the life of the job: nothing after this point ever mutates it. This is the 1:1 slide-to-narration pool every short (below) is built from.",
       "items": {
         "type": "object",
         "required": ["sequenceIndex", "slideId", "script"],

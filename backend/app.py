@@ -48,6 +48,19 @@ def _check_short_editable(job: dict, short: dict):
 @app.post("/jobs")
 def create_job():
     params = json.loads(request.form["params"])
+    input_mode = params.get("inputMode") or "transcript"
+    if input_mode not in ("transcript", "notes"):
+        return jsonify({"error": f"unknown inputMode {input_mode!r}"}), 400
+    pptx_upload = request.files.get("pptx")
+    if input_mode == "notes":
+        # The PDF is the export of the PPTX; notes pair to pages by position,
+        # which only holds for one deck.
+        if not pptx_upload:
+            return jsonify({"error": "a .pptx file is required for speaker-notes mode"}), 400
+        if len(params.get("pdfs") or []) != 1:
+            return jsonify({"error": "speaker-notes mode takes exactly one PDF: the export of that deck"}), 400
+    elif "srt" not in request.files:
+        return jsonify({"error": "a transcript (.srt) is required"}), 400
     job_id = db.new_job_id()
     now = now_iso()
 
@@ -64,6 +77,7 @@ def create_job():
     job = {
         "jobId": job_id, "createdAt": now, "updatedAt": now,
         "phase": "prepare", "step": "saving_inputs", "error": None,
+        "inputMode": input_mode,
         "params": {
             "narrationStyle": params.get("narrationStyle", ""),
             "transition": {
@@ -76,11 +90,15 @@ def create_job():
             "captions": bool(params.get("captions", False)),
         },
         "sources": {
-            "srt": {
+            "srt": None if input_mode == "notes" else {
                 "filename": params["srtFilename"],
                 "path": os.path.join(job_dir(job_id), "input", "transcript.srt"),
                 "cueCount": None, "durationSeconds": None, "fullText": None,
             },
+            "pptx": {
+                "filename": pptx_upload.filename,
+                "path": os.path.join(job_dir(job_id), "input", "deck.pptx"),
+            } if input_mode == "notes" else None,
             "pdfs": pdf_meta,
         },
         "slides": [], "alignment": [], "narration": [], "shorts": [], "activeShortId": None,
@@ -89,7 +107,10 @@ def create_job():
     for d in ("input", "slides", "audio", "output"):
         os.makedirs(os.path.join(job_dir(job_id), d), exist_ok=True)
 
-    request.files["srt"].save(job["sources"]["srt"]["path"])
+    if input_mode == "notes":
+        pptx_upload.save(job["sources"]["pptx"]["path"])
+    else:
+        request.files["srt"].save(job["sources"]["srt"]["path"])
     for i, pdf in enumerate(pdf_meta):
         request.files[f"pdf_{i}"].save(pdf["path"])
 

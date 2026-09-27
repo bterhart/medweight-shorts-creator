@@ -3,7 +3,8 @@
 Plain HTML/CSS/JS, no build step. Talks to `backend/app.py` (a Flask app — originally these were n8n
 webhooks, see `archive/README.md` for why that changed):
 
-- `POST {apiBase}/jobs` — job intake
+- `POST {apiBase}/jobs` — job intake (`params.inputMode` `transcript` with an `srt` field, or `notes` with
+  a `pptx` field and exactly one PDF)
 - `GET {apiBase}/jobs/:jobId/status` — polled every 3s
 - `POST {apiBase}/jobs/:jobId/shorts` — create a short (condenses the job's permanent narration to a
   target duration/topic with the saved prompt named by `promptId`, resolves voice, synthesizes audio)
@@ -24,9 +25,13 @@ Serve `ui/` as static files any way you like (it's just three files) and open `i
 
 ## Flow
 
-1. **Setup** — drag/drop the `.srt` and PDF(s), mark one PDF primary, submit (duration/voice aren't chosen
-   here - see step 3). Posts multipart form data: one `params` field (JSON-stringified config) plus `srt`
-   and `pdf_0`/`pdf_1`/… binary fields.
+1. **Setup** — pick a source. *Transcript + slide PDF*: drag/drop the `.srt` and PDF(s), mark one PDF
+   primary. *PPTX with speaker notes + its PDF export*: drag/drop the `.pptx` and the one PDF exported
+   from it (the notes pair to pages by position, so it must be that exact deck; hidden slides are omitted
+   by both). Submit (duration/voice aren't chosen here - see step 3). Posts multipart form data: one
+   `params` field (JSON-stringified config, including `inputMode`) plus `srt` or `pptx` and
+   `pdf_0`/`pdf_1`/… binary fields. The narration-style text only feeds transcript cleaning; in notes mode
+   the notes are used as written, though the prompt library saved from that box is still what shorts use.
 2. **Progress** — polls status until `phase` is `ready_for_review` or `failed`. Alignment runs against the
    *full* transcript and *full* slide deck (no target duration), then each slide's excerpt is cleaned
    (filler and personal references removed, nothing shortened). This narration is permanent - nothing later
