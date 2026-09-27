@@ -152,6 +152,7 @@
               "path": { "type": "string" },
               "contentType": { "type": "string" },
               "durationSeconds": { "type": ["number", "null"], "description": "From the MP4 container at intake; null for other containers (the render reads the real length)." },
+              "transcript": { "type": ["string", "null"], "description": "What the clip says (ElevenLabs speech-to-text at intake) - the only thing the app knows about the clip's content; build_short shows it to Claude. null if transcription failed or the clip has no speech." },
               "box": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4, "description": "[left, top, width, height] as fractions of the slide." }
             }
           },
@@ -266,10 +267,20 @@
                 "estimatedSeconds": { "type": "number" },
                 "customImagePath": {
                   "type": ["string", "null"],
-                  "description": "Set when this segment's image was replaced with an upload (not one of job.slides' own images) or added post-review. Takes priority over resolving slideId for rendering. Null means use job.slides[slideId]'s image as normal."
-                }
+                  "description": "Set when this segment's image was replaced with an upload (not one of job.slides' own images) or added post-review. Takes priority over resolving slideId for rendering. Null means use job.slides[slideId]'s image as normal. May be null on an added segment that has only a customVideoPath."
+                },
+                "customVideoPath": {
+                  "type": ["string", "null"],
+                  "description": "An uploaded clip on a segment added post-review (data/jobs/<id>/shorts/<shortId>/custom-media/). The render plays it full-frame (letterboxed, over customImagePath if there is one, else black) after the segment's narration, or alone when script is empty, with its own sound; its length is added to estimatedSeconds."
+                },
+                "customVideoSeconds": { "type": ["number", "null"], "description": "customVideoPath's length from its container, for the UI and estimates." }
               }
             }
+          },
+          "videoSlidesWithheld": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Set by build_short: slideIds whose embedded clip exceeds MAX_VIDEO_SHARE (half) of this short's target length and were therefore not offered to Claude at all - a short is never shorter than a clip it contains, and a clip is never most of a short. Shown on the short's card."
           },
           "audio": {
             "type": "array",

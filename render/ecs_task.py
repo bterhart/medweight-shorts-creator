@@ -53,6 +53,8 @@ def rewrite_local_paths(job, local_dir):
     for n in job.get("narration", []):
         if n.get("customImagePath"):
             n["customImagePath"] = str(local_dir / "custom-slides" / Path(n["customImagePath"]).name)
+        if n.get("customVideoPath"):
+            n["customVideoPath"] = str(local_dir / "custom-media" / Path(n["customVideoPath"]).name)
 
 
 def main():
@@ -75,6 +77,7 @@ def main():
         s3_download_prefix(s3, bucket, f"{prefix}/audio", local_dir / "audio")
         s3_download_prefix(s3, bucket, f"{prefix}/custom-slides", local_dir / "custom-slides")
         s3_download_prefix(s3, bucket, f"{prefix}/media", local_dir / "media")
+        s3_download_prefix(s3, bucket, f"{prefix}/custom-media", local_dir / "custom-media")
         rewrite_local_paths(job, local_dir)
 
         overrides = job.get("render", {}).get("pendingOverrides") or {}

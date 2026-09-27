@@ -434,7 +434,7 @@ function showReview(job) {
     text.className = "script-text";
     text.textContent = n.script || "(no narration - the slide's video plays on its own)";
     body.appendChild(text);
-    const videoNote = buildVideoNote(slide);
+    const videoNote = buildVideoNote(slide, true);
     if (videoNote) body.appendChild(videoNote);
 
     // Intake measured every bitmap on the page against what a full-size
@@ -502,12 +502,20 @@ function buildCheckboxField(id, labelText) {
 
 // A slide with an embedded video (notes mode): the render plays the clip
 // at its place on the slide after the narration, or alone if there is none.
-function buildVideoNote(slide) {
+function buildVideoNote(slide, withTranscript) {
   if (!slide || !slide.video) return null;
   const p = document.createElement("p");
   p.className = "hint video-note";
   const secs = slide.video.durationSeconds ? `${Math.round(slide.video.durationSeconds)} s ` : "";
   p.textContent = `Embedded video: ${secs}clip, plays after the narration with its own sound.`;
+  if (withTranscript) {
+    // What the app knows about the clip - this is what Claude sees when
+    // deciding whether the slide belongs in a short.
+    const t = document.createElement("span");
+    t.className = "video-transcript";
+    t.textContent = slide.video.transcript ? ` It says: "${slide.video.transcript}"` : " (no transcript - the clip's speech could not be transcribed)";
+    p.appendChild(t);
+  }
   return p;
 }
 
@@ -522,8 +530,9 @@ function buildEditableSegment(job, short, n, slidesById, editable) {
   seg.className = "segment-card";
 
   const imagePath = segmentImagePath(n, slidesById);
-  const img = document.createElement("img");
+  const img = document.createElement(imagePath ? "img" : "div");
   if (imagePath) img.src = fileUrl(imagePath);
+  else { img.className = "video-placeholder"; img.textContent = "video"; }  // an added clip with no image
   img.alt = n.slideId || "custom slide";
 
   const body = document.createElement("div");
@@ -607,7 +616,13 @@ function buildEditableSegment(job, short, n, slidesById, editable) {
     text.textContent = n.script || "(no narration - the slide's video plays on its own)";
     body.appendChild(text);
   }
-  if (!n.customImagePath) {
+  if (n.customVideoPath) {
+    const note = document.createElement("p");
+    note.className = "hint video-note";
+    const secs = n.customVideoSeconds ? `${Math.round(n.customVideoSeconds)} s ` : "";
+    note.textContent = `Uploaded video: ${secs}clip, plays full-frame after the narration with its own sound.`;
+    body.appendChild(note);
+  } else if (!n.customImagePath) {
     const videoNote = buildVideoNote(slidesById[n.slideId]);
     if (videoNote) body.appendChild(videoNote);
   }
@@ -647,7 +662,7 @@ function buildAddSegmentForm(short) {
 
   const textArea = document.createElement("textarea");
   textArea.rows = 2;
-  textArea.placeholder = "Narration for the new slide";
+  textArea.placeholder = "Narration for the new slide (may be left empty if you add a video - it then plays on its own)";
   // A draft here has nothing "saved" to compare against, so any non-empty
   // text counts as unsaved work for the guard.
   state.textFields.push({ textArea, original: "" });
@@ -655,6 +670,20 @@ function buildAddSegmentForm(short) {
   const fileInput = document.createElement("input");
   fileInput.type = "file";
   fileInput.accept = "image/png,image/jpeg,image/webp";
+  const fileLabel = document.createElement("label");
+  fileLabel.className = "hint";
+  fileLabel.textContent = "Image (png/jpg/webp)";
+  fileLabel.appendChild(fileInput);
+
+  // A video plays full-frame after the narration, over the image if one is
+  // given, or alone if there is no text.
+  const videoInput = document.createElement("input");
+  videoInput.type = "file";
+  videoInput.accept = "video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm";
+  const videoLabel = document.createElement("label");
+  videoLabel.className = "hint";
+  videoLabel.textContent = "Video (mp4/mov/webm), optional - plays after the narration";
+  videoLabel.appendChild(videoInput);
 
   const addBtn = document.createElement("button");
   addBtn.type = "button";
@@ -667,17 +696,19 @@ function buildAddSegmentForm(short) {
 
   addBtn.addEventListener("click", () => {
     const text = textArea.value.trim();
-    if (!text) { showError(errorEl, "Narration text is required."); return; }
-    if (!fileInput.files.length) { showError(errorEl, "An image is required."); return; }
+    const image = fileInput.files[0] || null;
+    const video = videoInput.files[0] || null;
+    if (!image && !video) { showError(errorEl, "An image and/or a video is required."); return; }
+    if (!text && !video) { showError(errorEl, "Narration text is required unless you add a video."); return; }
     if (!confirmDiscardUnsaved(textArea)) return;
-    addSegment(short.shortId, Number(position.value), text, fileInput.files[0], errorEl);
+    addSegment(short.shortId, Number(position.value), text, image, video, errorEl);
   });
 
   const row = document.createElement("div");
   row.className = "field-row";
   row.append(position, addBtn);
 
-  wrapper.append(textArea, fileInput, row, errorEl);
+  wrapper.append(textArea, fileLabel, videoLabel, row, errorEl);
   return wrapper;
 }
 
@@ -729,12 +760,13 @@ async function deleteSegment(shortId, seq, errorEl) {
   }
 }
 
-async function addSegment(shortId, position, text, file, errorEl) {
+async function addSegment(shortId, position, text, image, video, errorEl) {
   showError(errorEl, "");
   const form = new FormData();
   form.append("script", text);
   form.append("position", String(position));
-  form.append("image", file, file.name);
+  if (image) form.append("image", image, image.name);
+  if (video) form.append("video", video, video.name);
   try {
     const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/shorts/${shortId}/segments`, {
       method: "POST",
@@ -784,6 +816,14 @@ function buildShortCard(job, short, slidesById) {
   // exist. Editable once the pipeline isn't mid-flight for THIS short and no
   // other short on the job is active either - same window the render button
   // below is already enabled in.
+  if (short.videoSlidesWithheld && short.videoSlidesWithheld.length) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = `Not offered for this short (clip longer than half its ${short.targetDurationSeconds}s target): `
+      + short.videoSlidesWithheld.join(", ") + ". Pick a longer target length to include it.";
+    card.appendChild(p);
+  }
+
   const editable = (short.phase === "ready_for_render" || short.phase === "done") && !job.activeShortId;
   for (const n of [...short.script].sort((a, b) => a.sequenceIndex - b.sequenceIndex)) {
     card.appendChild(buildEditableSegment(job, short, n, slidesById, editable));

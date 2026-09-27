@@ -105,6 +105,9 @@ def dispatch_render(job: dict, short: dict, render_count: int) -> str:
         path = n.get("customImagePath")
         if path and os.path.isfile(path):
             s3.upload_file(path, config.RENDER_S3_BUCKET, f"{prefix}/custom-slides/{os.path.basename(path)}")
+        video_path = n.get("customVideoPath")
+        if video_path and os.path.isfile(video_path):
+            s3.upload_file(video_path, config.RENDER_S3_BUCKET, f"{prefix}/custom-media/{os.path.basename(video_path)}")
 
     overrides = short.get("render", {}).get("pendingOverrides") or {}
     if overrides.get("includeIntro"):

@@ -61,10 +61,13 @@ to the DB after each one so status polls see live progress. `job.inputMode` pick
 3-4: the PPTX's speaker notes are the narration and visible slide *i* is PDF page *i*, so `job.narration` is
 written verbatim with `job.alignment` left empty - no Claude call, seconds not minutes; a video embedded on
 a slide is written to `data/jobs/<id>/media/` and recorded as `slides[].video` with its position on the
-slide, and a video-only slide becomes a segment with an empty script). Both routes end at the same
-`ready_for_review` shape, so everything from step 5 on is identical - `build_short` tells Claude which
-source segments carry a clip and its length, and `synthesize_audio` makes no ElevenLabs call for an empty
-script:
+slide and its transcript from ElevenLabs speech-to-text (`transcribe_video` - a failure is a warning, the
+clip still renders), and a video-only slide becomes a segment with an empty script). Both routes end at
+the same `ready_for_review` shape, so everything from step 5 on is identical - `build_short` tells Claude
+which source segments carry a clip, its length and what it says, withholds any clip longer than
+`MAX_VIDEO_SHARE` of the target (recorded on the short as `videoSlidesWithheld`), and `synthesize_audio`
+makes no ElevenLabs call for an empty script. `POST .../segments` accepts a `video` upload alongside or
+instead of `image` (`customVideoPath`), played full-frame after the narration:
 
 1. `parse_srt` — cue/duration/full-text extraction, unchanged logic.
 2. `extract_pdf_slides` — **PyMuPDF (`pymupdf`/`fitz`) instead of poppler-utils.** Renders pages to PNG and

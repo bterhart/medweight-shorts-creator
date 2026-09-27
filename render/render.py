@@ -41,23 +41,28 @@ def fit_image_clip(image_path, duration, target_w, target_h, video=None, video_s
     centered. With `video` ({path, box}), the slide's embedded clip is
     composited over the letterboxed page at `box` (its position and size
     as fractions of the slide), starting at `video_start` into the segment
-    (after the narration), played once and holding its last frame for
-    whatever segment time remains. Returns (clip, video_audio) - the clip's
-    own soundtrack (unpositioned; the caller starts it at the segment's
-    start + video_start) or None."""
-    img = ImageClip(image_path)
-    scale = min(target_w / img.w, target_h / img.h)
-    if scale > 1.0:
-        # Visible in the task's CloudWatch log (or the CLI's stderr): the
-        # source is being upscaled, so this segment will be softer than the
-        # rest. Intake now renders slides above frame size, so this points
-        # at a custom-uploaded image or a job prepared before that change.
-        print(f"warning: {image_path} is {img.w}x{img.h}, smaller than the {target_w}x{target_h} frame - upscaling",
-              file=sys.stderr)
-    img_w, img_h = img.w * scale, img.h * scale
-    img = img.resized(scale).with_duration(duration).with_position("center")
+    (after the narration) - its first frame is shown there until then -
+    played once and holding its last frame for whatever segment time
+    remains. image_path may be None (an uploaded clip with no image): the
+    clip is then placed against black, `box` spanning the whole frame.
+    Returns (clip, video_audio) - the clip's own soundtrack (unpositioned;
+    the caller starts it at the segment's start + video_start) or None."""
     bg = ColorClip(size=(target_w, target_h), color=(0, 0, 0)).with_duration(duration)
-    layers = [bg, img]
+    layers = [bg]
+    if image_path:
+        img = ImageClip(image_path)
+        scale = min(target_w / img.w, target_h / img.h)
+        if scale > 1.0:
+            # Visible in the task's CloudWatch log (or the CLI's stderr): the
+            # source is being upscaled, so this segment will be softer than the
+            # rest. Intake now renders slides above frame size, so this points
+            # at a custom-uploaded image or a job prepared before that change.
+            print(f"warning: {image_path} is {img.w}x{img.h}, smaller than the {target_w}x{target_h} frame - upscaling",
+                  file=sys.stderr)
+        img_w, img_h = img.w * scale, img.h * scale
+        layers.append(img.resized(scale).with_duration(duration).with_position("center"))
+    else:
+        img_w, img_h = float(target_w), float(target_h)
     video_audio = None
 
     if video:
@@ -73,6 +78,10 @@ def fit_image_clip(image_path, duration, target_w, target_h, video=None, video_s
         if clip.audio:
             video_audio = clip.audio.with_duration(min(clip.duration, remaining))
         clip = clip.without_audio().resized(vscale)
+        if video_start > 0:
+            # While the narration plays, the clip's first frame sits where the
+            # clip will play - not whatever the exported page shows there.
+            layers.append(clip.to_ImageClip(t=0).with_duration(video_start).with_position((x, y)))
         if remaining > clip.duration:
             clip = clip.with_effects([vfx.Freeze(t="end", total_duration=remaining)])
         elif remaining < clip.duration:
@@ -140,11 +149,18 @@ def build_segments(job):
         # A post-review image swap or an added segment carries its own
         # customImagePath, which is never one of job.slides' own images -
         # only fall back to resolving slideId when there isn't one.
-        image_path = n.get("customImagePath") or slides_by_id[n["slideId"]]["imagePath"]
+        # An added segment may have only a video (no image at all).
+        image_path = n.get("customImagePath") or (slides_by_id[n["slideId"]]["imagePath"] if n.get("slideId") else None)
         # A slide's embedded clip is composited at its position on that
-        # slide's own image - so a swapped image drops it. It plays after
-        # the narration (or alone), so the segment is narration + clip.
-        video = None if n.get("customImagePath") else (slides_by_id.get(n.get("slideId")) or {}).get("video")
+        # slide's own image - so a swapped image drops it. An uploaded clip
+        # plays full-frame. Either plays after the narration (or alone), so
+        # the segment is narration + clip.
+        if n.get("customVideoPath"):
+            video = {"path": n["customVideoPath"], "box": [0.0, 0.0, 1.0, 1.0]}
+        elif n.get("customImagePath"):
+            video = None
+        else:
+            video = (slides_by_id.get(n.get("slideId")) or {}).get("video")
         audio = audio_by_seq.get(seq)
         audio_dur = audio["durationSeconds"] if audio else 0.0
         video_dur = VideoFileClip(video["path"]).duration if video else 0.0

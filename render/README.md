@@ -42,9 +42,10 @@ carry a `customImagePath` (its image was replaced with an upload, or it was adde
 (`{path, box}` - a clip embedded in the PPTX, `box` its position as fractions of the slide): `fit_image_clip`
 composites it over the letterboxed page inside that box, starting after the segment's narration audio (at
 the segment's start if there is none), played once with its own soundtrack mixed into the audio layers,
-holding its last frame if the segment runs longer. The segment lasts narration + clip (floored at
-`minSlideSeconds`). A segment whose image was swapped drops the clip - the box would mean nothing on
-another image. There, unlike the CLI path
+holding its last frame if the segment runs longer; until it starts, its first frame is shown in the box.
+The segment lasts narration + clip (floored at `minSlideSeconds`). A segment whose image was swapped drops
+the clip - the box would mean nothing on another image. A segment with a `customVideoPath` (an uploaded
+clip) plays it full-frame (`box` = the whole frame) over its `customImagePath` or, with no image, black. There, unlike the CLI path
 above, a re-render replaces the previous one: `POST .../render` clears the stale preview and the worker
 deletes the old `video-NN.mp4` from S3 before dispatching the new render. The finished video is served to the
 UI through a presigned S3 URL; the worker stores one at completion and `GET /jobs/<id>/status` re-signs it on

@@ -19,6 +19,7 @@ import pipeline
 app = Flask(__name__)
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm"}
 
 
 def now_iso():
@@ -362,9 +363,11 @@ def delete_segment(job_id, short_id, seq):
 @app.post("/jobs/<job_id>/shorts/<short_id>/segments")
 def add_segment(job_id, short_id):
     """Inserts a new segment at 'position' (0-based, default: end) with the
-    given narration text and an uploaded image (required - a new segment
-    has no original slide to fall back on). Queues just the new segment for
-    synthesis, same as a text edit."""
+    given narration text and an uploaded 'image' and/or 'video' (at least
+    one - a new segment has no original slide to fall back on). A video
+    plays full-frame after the narration (over the image if there is one),
+    or alone if the text is empty. Queues the new segment for synthesis,
+    same as a text edit; an empty script synthesizes nothing."""
     job = db.get_job(job_id)
     if not job:
         return jsonify({"error": "not found"}), 404
@@ -377,13 +380,17 @@ def add_segment(job_id, short_id):
 
     text = (request.form.get("script") or "").strip()
     upload = request.files.get("image")
-    if not text:
-        return jsonify({"error": "script is required"}), 400
-    if not upload:
-        return jsonify({"error": "an 'image' file is required"}), 400
-    ext = os.path.splitext(upload.filename or "")[1].lower()
-    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+    video_upload = request.files.get("video")
+    if not upload and not video_upload:
+        return jsonify({"error": "an 'image' and/or a 'video' file is required"}), 400
+    if not text and not video_upload:
+        return jsonify({"error": "script is required unless a video is supplied"}), 400
+    ext = os.path.splitext(upload.filename or "")[1].lower() if upload else None
+    if upload and ext not in ALLOWED_IMAGE_EXTENSIONS:
         return jsonify({"error": f"unsupported image type {ext!r} - use png, jpg, or webp"}), 400
+    video_ext = os.path.splitext(video_upload.filename or "")[1].lower() if video_upload else None
+    if video_upload and video_ext not in ALLOWED_VIDEO_EXTENSIONS:
+        return jsonify({"error": f"unsupported video type {video_ext!r} - use mp4, mov, or webm"}), 400
 
     try:
         position = int(request.form.get("position", len(short["script"])))
@@ -391,16 +398,28 @@ def add_segment(job_id, short_id):
         return jsonify({"error": "position must be an integer"}), 400
     position = max(0, min(position, len(short["script"])))
 
-    custom_dir = os.path.join(job_dir(job_id), "shorts", short_id, "custom-slides")
-    os.makedirs(custom_dir, exist_ok=True)
-    path = os.path.join(custom_dir, f"seg-new-{uuid.uuid4().hex[:8]}{ext}")
-    upload.save(path)
+    stem = f"seg-new-{uuid.uuid4().hex[:8]}"
+    path = video_path = None
+    if upload:
+        custom_dir = os.path.join(job_dir(job_id), "shorts", short_id, "custom-slides")
+        os.makedirs(custom_dir, exist_ok=True)
+        path = os.path.join(custom_dir, f"{stem}{ext}")
+        upload.save(path)
+    video_seconds = 0.0
+    if video_upload:
+        media_dir = os.path.join(job_dir(job_id), "shorts", short_id, "custom-media")
+        os.makedirs(media_dir, exist_ok=True)
+        video_path = os.path.join(media_dir, f"{stem}{video_ext}")
+        video_upload.save(video_path)
+        video_seconds = pipeline.media_duration_seconds(video_path) or 0.0
 
     words = len(text.split())
     new_segment = {
         "sequenceIndex": None, "slideId": None, "script": text,
-        "estimatedWords": words, "estimatedSeconds": round((words / pipeline.WORDS_PER_MINUTE) * 60),
+        "estimatedWords": words, "estimatedSeconds": round((words / pipeline.WORDS_PER_MINUTE) * 60 + video_seconds),
         "customImagePath": path,
+        "customVideoPath": video_path,
+        "customVideoSeconds": video_seconds if video_upload else None,
     }
     ordered = sorted(short["script"], key=lambda n: n["sequenceIndex"])
     ordered.insert(position, new_segment)

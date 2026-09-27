@@ -34,6 +34,10 @@ SHORT_NARRATION_PROMPT_NAME = "Second pass (CBT/MI/ACT/DBT narration)"
 # under max_tokens - a single call could silently truncate a long transcript.
 CLEAN_SEGMENTS_PER_CALL = 10
 CLEAN_CONCURRENCY = 4
+# A slide's embedded clip is offered to build_short only when it is at most
+# this share of the short's target length: a short can then never be shorter
+# than a clip it contains, and a clip can never be most of a short.
+MAX_VIDEO_SHARE = 0.5
 
 
 def _srt_time_to_seconds(t: str) -> float:
@@ -142,6 +146,30 @@ def extract_pdf_slides(pdf_path: str, pdf_id: str, slides_dir: str) -> list:
 _R_LINK = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}link"
 
 
+def transcribe_video(path: str) -> str | None:
+    """What the clip says, via ElevenLabs speech-to-text (same key as the
+    voice synthesis). This is the only way the app learns what an embedded
+    video is about - the PDF page for it is blank and it has no notes - so
+    build_short can judge whether it belongs in a short. A failure is a
+    warning, not an intake error: the clip still renders, Claude just gets
+    its length alone."""
+    try:
+        with open(path, "rb") as f:
+            resp = requests.post(
+                f"{config.ELEVENLABS_BASE_URL}/v1/speech-to-text",
+                headers={"xi-api-key": config.ELEVENLABS_API_KEY},
+                data={"model_id": "scribe_v1"},
+                files={"file": (os.path.basename(path), f)},
+                timeout=300,
+            )
+        resp.raise_for_status()
+        text = (resp.json().get("text") or "").strip()
+        return text or None
+    except Exception as e:
+        print(f"warning: could not transcribe {path}: {type(e).__name__}: {e}")
+        return None
+
+
 def _extract_slide_video(slide, slide_number: int, media_dir: str, slide_w: int, slide_h: int) -> dict | None:
     """The first embedded video on the slide, written out to media_dir, with
     where it sits as fractions of the slide (the render composites it there
@@ -167,16 +195,22 @@ def _extract_slide_video(slide, slide_number: int, media_dir: str, slide_w: int,
     path = os.path.join(media_dir, f"slide-{slide_number:03d}{ext}")
     with open(path, "wb") as f:
         f.write(part.blob)
-    try:
-        duration = MP4(path).info.length
-    except Exception:
-        duration = None  # not an MP4 container; the render reads the real length anyway
     return {
         "path": path,
         "contentType": part.content_type,
-        "durationSeconds": duration,
+        "durationSeconds": media_duration_seconds(path),
+        "transcript": transcribe_video(path),
         "box": [shape.left / slide_w, shape.top / slide_h, shape.width / slide_w, shape.height / slide_h],
     }
+
+
+def media_duration_seconds(path: str) -> float | None:
+    """Clip length from the MP4 container; None for anything mutagen can't
+    read (the render reads the real length from the stream regardless)."""
+    try:
+        return MP4(path).info.length
+    except Exception:
+        return None
 
 
 def extract_pptx_notes(pptx_path: str, media_dir: str) -> list:
@@ -353,20 +387,33 @@ def build_short(job: dict, short: dict) -> None:
     style_prompt = style_prompt_row["text"]
 
     videos_by_id = {s["slideId"]: s["video"] for s in job.get("slides", []) if s.get("video")}
+    target_seconds = short["targetDurationSeconds"]
+
+    # A clip longer than MAX_VIDEO_SHARE of this short's target is withheld
+    # from the source list altogether (its narration too - the render would
+    # play the clip regardless), and the short records why.
+    withheld = sorted(
+        slide_id for slide_id, v in videos_by_id.items()
+        if (v.get("durationSeconds") or 0) > MAX_VIDEO_SHARE * target_seconds
+    )
+    if withheld:
+        print(f"build_short: withholding {withheld} - clip longer than {MAX_VIDEO_SHARE:.0%} of the {target_seconds}s target")
+    short["videoSlidesWithheld"] = withheld
 
     def _video_note(slide_id):
         v = videos_by_id.get(slide_id)
         if not v:
             return {}
         secs = f"{v['durationSeconds']:.0f} s " if v.get("durationSeconds") else ""
-        return {"video": f"{secs}clip embedded on this slide, with its own sound; plays after this segment's narration, or alone if the script is empty"}
+        said = f' It says: "{v["transcript"]}"' if v.get("transcript") else ""
+        return {"video": f"{secs}clip embedded on this slide, with its own sound; plays after this segment's narration, "
+                         f"or alone if the script is empty.{said}"}
 
     full_narration = [
         {"sequence_index": n["sequenceIndex"], "slide_id": n["slideId"], "script": n["script"], **_video_note(n["slideId"])}
-        for n in job["narration"]
+        for n in job["narration"] if n["slideId"] not in withheld
     ]
-    known_ids = {n["slideId"] for n in job["narration"]}
-    target_seconds = short["targetDurationSeconds"]
+    known_ids = {n["slide_id"] for n in full_narration}
     total_word_budget = round(target_seconds / 60 * WORDS_PER_MINUTE)
 
     prompt = (

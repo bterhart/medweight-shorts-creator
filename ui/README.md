@@ -56,8 +56,11 @@ Serve `ui/` as static files any way you like (it's just three files) and open `i
    segment on the card is editable: rewrite its narration text (**Save
    text** — resynthesizes just that segment's audio, nothing else), swap its image (a deck-slide picker or
    **Upload image…**), **Delete slide**, or use the **Add a slide** form to insert a new segment (text + image)
-   at any position. A segment whose slide carries an embedded video shows a green "Embedded video" note (the
-   clip plays there after the narration; a video-only slide shows "(no narration ...)" in place of text). A
+   at any position - the **Add a slide** form takes an image and/or a video (mp4/mov/webm; text may be empty
+   when a video is given, and the clip then plays on its own). A segment whose slide carries an embedded
+   video shows a green "Embedded video" note (the clip plays there after the narration; a video-only slide
+   shows "(no narration ...)" in place of text; the review list also shows the clip's transcript), and a
+   short's card lists any video slide withheld because its clip exceeds half the target length. A
    previously rendered preview stays visible after an edit, flagged as stale, until you
    render again - at which point it's deleted and replaced by the new render. Narration typed into a
    segment's box only counts once you click **Save text**; any action that would refresh the screen

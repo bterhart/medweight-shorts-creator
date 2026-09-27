@@ -44,8 +44,14 @@ newest piece and is unverified against a real deck as of this change: its `worke
   at intake (the PDF export carries nothing of it but a blank page) and, in the render, composited over the
   slide at the shape's own position and size, played once with its own sound, after that slide's
   narration - or alone on a slide that has a video but no notes, which now counts as a segment. The
-  Create-short prompt tells Claude which slides carry a clip and how long it is, so the clip's length is
-  budgeted into the target duration. One video per slide; needs the render image rebuilt.
+  Create-short prompt tells Claude which slides carry a clip, how long it is and what it says (each clip
+  is transcribed at intake with ElevenLabs speech-to-text - the exported page for a video slide is blank,
+  so this is the only way the app knows what the clip is about; the transcript shows on the review
+  screen). A clip longer than half a short's target length is withheld from that short and the card says
+  so, so a short is never shorter than a clip in it and a clip is never most of a short. While the
+  narration plays, the clip's first frame is shown in its place. "Add a slide" also takes an MP4 (with or
+  without an image, with or without text): it plays full-frame after any narration. One embedded video
+  per slide; render changes need the image rebuilt.
 - **Speaker-notes intake.** Step 1 has a source switch. "PPTX with speaker notes + its PDF export" takes
   the deck itself and the PDF exported from it: each visible slide's notes become that slide's narration,
   verbatim, paired to PDF pages by position (hidden slides are excluded on both sides, and a count
