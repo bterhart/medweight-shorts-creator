@@ -68,10 +68,45 @@ def parse_srt(srt_path: str) -> dict:
     return {"cueCount": len(cues), "durationSeconds": duration, "fullText": full_text}
 
 
+def _zoom_for_long_edge(page, long_edge_px: int) -> pymupdf.Matrix:
+    """Render matrix that puts the page's long edge at exactly long_edge_px
+    (get_pixmap's dpi= only takes integers, which can't hit a pixel size)."""
+    zoom = long_edge_px / max(page.rect.width, page.rect.height)
+    return pymupdf.Matrix(zoom, zoom)
+
+
+def _audit_page_images(page) -> dict:
+    """Effective resolution of every bitmap placed on the page: its pixel
+    size divided by the size it's drawn at. Compared against what a
+    full-size render needs (the page scaled to fit OUTPUT_MAX_WIDTH_PX x
+    OUTPUT_MAX_HEIGHT_PX), so a photo the PDF export carried at 96 ppi is
+    flagged at intake instead of discovered as blur in the finished video.
+    Vector content isn't audited - it's rendered at whatever DPI we choose."""
+    scale = min(config.OUTPUT_MAX_WIDTH_PX / page.rect.width, config.OUTPUT_MAX_HEIGHT_PX / page.rect.height)
+    required_ppi = scale * 72.0
+    ppis = []
+    for info in page.get_image_info():
+        x0, y0, x1, y1 = info["bbox"]
+        w_in, h_in = (x1 - x0) / 72.0, (y1 - y0) / 72.0
+        if w_in <= 0 or h_in <= 0:
+            continue
+        ppis.append(min(info["width"] / w_in, info["height"] / h_in))
+    return {
+        "count": len(ppis),
+        "minEffectivePpi": round(min(ppis)) if ppis else None,
+        "requiredPpi": round(required_ppi),
+    }
+
+
 def extract_pdf_slides(pdf_path: str, pdf_id: str, slides_dir: str) -> list:
     """Renders each page to PNG and extracts its text, using PyMuPDF - no
     poppler-utils/system dependency, deliberately, since root/system-package
-    access on the target host (cPanel/CloudLinux) isn't guaranteed."""
+    access on the target host (cPanel/CloudLinux) isn't guaranteed.
+
+    Two renditions per page: imagePath at SLIDE_IMAGE_LONG_EDGE_PX for the
+    render (only used slides ever leave the host), previewImagePath at
+    SLIDE_PREVIEW_LONG_EDGE_PX for the review UI. Plus imageAudit - see
+    _audit_page_images."""
     os.makedirs(slides_dir, exist_ok=True)
     slides = []
     doc = pymupdf.open(pdf_path)
@@ -81,16 +116,18 @@ def extract_pdf_slides(pdf_path: str, pdf_id: str, slides_dir: str) -> list:
             pnum = f"{page_num + 1:03d}"
             slide_id = f"{pdf_id}-p{pnum}"
             image_path = os.path.join(slides_dir, f"{slide_id}.png")
+            preview_path = os.path.join(slides_dir, f"{slide_id}-preview.png")
             text_path = os.path.join(slides_dir, f"{slide_id}.txt")
 
-            pix = page.get_pixmap(dpi=150)
-            pix.save(image_path)
+            page.get_pixmap(matrix=_zoom_for_long_edge(page, config.SLIDE_IMAGE_LONG_EDGE_PX)).save(image_path)
+            page.get_pixmap(matrix=_zoom_for_long_edge(page, config.SLIDE_PREVIEW_LONG_EDGE_PX)).save(preview_path)
             with open(text_path, "w", encoding="utf-8") as f:
                 f.write(page.get_text())
 
             slides.append({
                 "slideId": slide_id, "pdfId": pdf_id, "pageNumber": page_num + 1,
-                "imagePath": image_path, "textPath": text_path,
+                "imagePath": image_path, "previewImagePath": preview_path, "textPath": text_path,
+                "imageAudit": _audit_page_images(page),
             })
     finally:
         doc.close()

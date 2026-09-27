@@ -62,16 +62,16 @@ def dispatch_render(job: dict, short: dict, render_count: int) -> str:
     shorts on the same job never collide.
 
     Only the slides this short's script actually references are included
-    and uploaded - a 90s short uses a handful of a 70-slide deck, and the
-    render never reads a slide's extracted text, so neither the unused
-    images nor any .txt files are sent."""
+    and uploaded - a 90s short uses a handful of a 70-slide deck - and only
+    the full-resolution image of each: the render never reads a slide's
+    extracted text, preview rendition, or image audit."""
     job_id, short_id = job["jobId"], short["shortId"]
     prefix = _prefix(job_id, short_id)
     s3 = _s3()
 
     used_slide_ids = {n["slideId"] for n in short["script"] if n.get("slideId")}
     used_slides = [
-        {k: v for k, v in slide.items() if k != "textPath"}
+        {k: v for k, v in slide.items() if k in ("slideId", "pdfId", "pageNumber", "imagePath")}
         for slide in job.get("slides", []) if slide["slideId"] in used_slide_ids
     ]
 

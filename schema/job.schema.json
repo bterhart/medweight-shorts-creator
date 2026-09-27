@@ -120,8 +120,18 @@
           "slideId": { "type": "string", "description": "e.g. 'pdf-1-p003'." },
           "pdfId": { "type": "string" },
           "pageNumber": { "type": "integer" },
-          "imagePath": { "type": "string" },
-          "textPath": { "type": "string", "description": "Extracted page text, given to the alignment model alongside the image itself." }
+          "imagePath": { "type": "string", "description": "Full-resolution rendition: the page rasterised so its long edge is SLIDE_IMAGE_LONG_EDGE_PX (3840 by default). What the render uses; only the slides a short's script references are ever uploaded to S3." },
+          "previewImagePath": { "type": "string", "description": "Small rendition (long edge SLIDE_PREVIEW_LONG_EDGE_PX, 1280 by default) the review UI loads instead of imagePath. Absent on jobs prepared before it existed - the UI falls back to imagePath." },
+          "textPath": { "type": "string", "description": "Extracted page text, given to the alignment model alongside the image itself." },
+          "imageAudit": {
+            "type": "object",
+            "description": "Effective resolution of the bitmaps embedded on this page (pixel size over placed size), measured at intake. minEffectivePpi below requiredPpi means a full-size render upscales that image; the review UI flags it. Vector content is not audited - it is rasterised at whatever DPI we choose.",
+            "properties": {
+              "count": { "type": "integer" },
+              "minEffectivePpi": { "type": ["integer", "null"] },
+              "requiredPpi": { "type": "integer", "description": "What OUTPUT_MAX_WIDTH_PX x OUTPUT_MAX_HEIGHT_PX (1920x1080) demands of this page's geometry." }
+            }
+          }
         }
       }
     },

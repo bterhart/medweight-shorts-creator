@@ -40,6 +40,13 @@ def fit_image_clip(image_path, duration, target_w, target_h):
     """Scale the slide to fit within the frame (letterboxed on black), centered."""
     img = ImageClip(image_path)
     scale = min(target_w / img.w, target_h / img.h)
+    if scale > 1.0:
+        # Visible in the task's CloudWatch log (or the CLI's stderr): the
+        # source is being upscaled, so this segment will be softer than the
+        # rest. Intake now renders slides above frame size, so this points
+        # at a custom-uploaded image or a job prepared before that change.
+        print(f"warning: {image_path} is {img.w}x{img.h}, smaller than the {target_w}x{target_h} frame - upscaling",
+              file=sys.stderr)
     img = img.resized(scale).with_duration(duration).with_position("center")
     bg = ColorClip(size=(target_w, target_h), color=(0, 0, 0)).with_duration(duration)
     return CompositeVideoClip([bg, img], size=(target_w, target_h)).with_duration(duration)

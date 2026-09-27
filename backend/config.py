@@ -49,6 +49,19 @@ ALIGNMENT_MODEL = os.environ.get("ALIGNMENT_MODEL", "claude-opus-5")
 ALIGNMENT_EFFORT = os.environ.get("ALIGNMENT_EFFORT", "high")
 ALIGNMENT_FALLBACKS = os.environ.get("ALIGNMENT_FALLBACKS", "1").lower() not in ("0", "false", "no")
 
+# Slide images are rasterised from the PDF at whatever DPI puts the page's
+# long edge at SLIDE_IMAGE_LONG_EDGE_PX - sized past the widest render the
+# UI offers (1920) with headroom for 4K, so vector slide content (text,
+# shapes, charts) is never what limits output sharpness. The review UI loads
+# a second, small rendition at SLIDE_PREVIEW_LONG_EDGE_PX instead. Embedded
+# bitmaps are a different matter: their ceiling is what the PDF export
+# carried, and the intake audit flags any that a full-size render would
+# have to upscale (OUTPUT_MAX_* match RESOLUTION_MAP's "full" in ui/app.js).
+SLIDE_IMAGE_LONG_EDGE_PX = int(os.environ.get("SLIDE_IMAGE_LONG_EDGE_PX", "3840"))
+SLIDE_PREVIEW_LONG_EDGE_PX = int(os.environ.get("SLIDE_PREVIEW_LONG_EDGE_PX", "1280"))
+OUTPUT_MAX_WIDTH_PX = 1920
+OUTPUT_MAX_HEIGHT_PX = 1080
+
 WORKER_LOCK_FILE = os.environ.get("CHATBOT_SHORTS_WORKER_LOCK", os.path.join(DATA_DIR, "worker.lock"))
 
 # Rendering runs on AWS Fargate instead of in-process - the cPanel shared

@@ -362,7 +362,7 @@ function showReview(job) {
     card.className = "segment-card";
 
     const img = document.createElement("img");
-    img.src = fileUrl(slide.imagePath);
+    img.src = fileUrl(slide.previewImagePath || slide.imagePath);
     img.alt = n.slideId;
 
     const body = document.createElement("div");
@@ -371,6 +371,17 @@ function showReview(job) {
     text.className = "script-text";
     text.textContent = n.script;
     body.appendChild(text);
+
+    // Intake measured every bitmap on the page against what a full-size
+    // render needs; say so here, before a render is spent on it.
+    const audit = slide.imageAudit;
+    if (audit && audit.minEffectivePpi !== null && audit.minEffectivePpi < audit.requiredPpi) {
+      const warn = document.createElement("p");
+      warn.className = "warn-text";
+      warn.textContent = `Lowest-resolution image on this slide is ${audit.minEffectivePpi} ppi; a 1080p render needs `
+        + `${audit.requiredPpi} ppi, so it will be upscaled. Re-export the deck with image compression off, or replace the source image.`;
+      body.appendChild(warn);
+    }
 
     // Cleaning (filler/personal-reference removal) is lossy by nature - the
     // raw excerpt alignment produced is kept untouched precisely so it can
@@ -427,7 +438,7 @@ function buildCheckboxField(id, labelText) {
 function segmentImagePath(n, slidesById) {
   if (n.customImagePath) return n.customImagePath;
   const slide = slidesById[n.slideId];
-  return slide ? slide.imagePath : null;
+  return slide ? (slide.previewImagePath || slide.imagePath) : null;
 }
 
 function buildEditableSegment(job, short, n, slidesById, editable) {

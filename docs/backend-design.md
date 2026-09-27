@@ -61,7 +61,12 @@ to the DB after each one so status polls see live progress:
 1. `parse_srt` — cue/duration/full-text extraction, unchanged logic.
 2. `extract_pdf_slides` — **PyMuPDF (`pymupdf`/`fitz`) instead of poppler-utils.** Renders pages to PNG and
    pulls text directly, no system binary (`pdftoppm`/`pdftotext`) or root access required — deliberate,
-   since root/system-package access on the target host isn't guaranteed.
+   since root/system-package access on the target host isn't guaranteed. Two PNGs per page: the render's
+   full-resolution one (long edge `SLIDE_IMAGE_LONG_EDGE_PX`, 3840 by default, so vector slide content is
+   never what limits output sharpness) and a small `previewImagePath` for the review UI. It also records an
+   `imageAudit` per page - the effective ppi of every embedded bitmap against what a 1920x1080 render
+   needs - so a photo the PDF export carried at low resolution is flagged in the review UI before a render
+   is spent on it. Bitmaps can't be improved server-side; export the deck with image compression off.
 3. `alignment.align_job` (`backend/alignment.py`) — one Claude vision request per job: the whole
    transcript as numbered cues plus every slide as an image (re-rendered at 96 DPI for the request) with
    its extracted text. The model returns, in narrative order, the inclusive cue range each slide was on

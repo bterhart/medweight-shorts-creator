@@ -38,6 +38,11 @@ newest piece and is unverified against a real deck as of this change: its `worke
 
 ## Recently added
 
+- **Full-resolution slides.** Slide images are rasterised so their long edge is 3840 px (configurable,
+  `SLIDE_IMAGE_LONG_EDGE_PX`) instead of a fixed 150 DPI, with a separate small rendition for the review
+  UI, so vector content stays sharp at any output size. Intake audits every embedded bitmap's effective
+  resolution against a 1080p render and the review screen flags any slide that would be upscaled. The
+  render logs a warning when it has to upscale a source image.
 - **Alignment moved from Manus to Claude.** One request per job (`backend/alignment.py`): every slide as
   an image with its extracted text, plus the full transcript as numbered cues. The model returns cue
   ranges, not text, so each excerpt is sliced exactly from the SRT. No transcript windows or chunk
