@@ -36,8 +36,15 @@ def parse_resolution(res_str):
     return int(w), int(h)
 
 
-def fit_image_clip(image_path, duration, target_w, target_h):
-    """Scale the slide to fit within the frame (letterboxed on black), centered."""
+def fit_image_clip(image_path, duration, target_w, target_h, video=None, video_start=0.0):
+    """Scale the slide to fit within the frame (letterboxed on black),
+    centered. With `video` ({path, box}), the slide's embedded clip is
+    composited over the letterboxed page at `box` (its position and size
+    as fractions of the slide), starting at `video_start` into the segment
+    (after the narration), played once and holding its last frame for
+    whatever segment time remains. Returns (clip, video_audio) - the clip's
+    own soundtrack (unpositioned; the caller starts it at the segment's
+    start + video_start) or None."""
     img = ImageClip(image_path)
     scale = min(target_w / img.w, target_h / img.h)
     if scale > 1.0:
@@ -47,9 +54,32 @@ def fit_image_clip(image_path, duration, target_w, target_h):
         # at a custom-uploaded image or a job prepared before that change.
         print(f"warning: {image_path} is {img.w}x{img.h}, smaller than the {target_w}x{target_h} frame - upscaling",
               file=sys.stderr)
+    img_w, img_h = img.w * scale, img.h * scale
     img = img.resized(scale).with_duration(duration).with_position("center")
     bg = ColorClip(size=(target_w, target_h), color=(0, 0, 0)).with_duration(duration)
-    return CompositeVideoClip([bg, img], size=(target_w, target_h)).with_duration(duration)
+    layers = [bg, img]
+    video_audio = None
+
+    if video:
+        clip = VideoFileClip(video["path"])
+        bx, by, bw, bh = video["box"]
+        # The box is on the slide; the slide is letterboxed - map through both.
+        box_w, box_h = bw * img_w, bh * img_h
+        vscale = min(box_w / clip.w, box_h / clip.h)  # fit inside the shape's box, keep the clip's aspect
+        vw, vh = clip.w * vscale, clip.h * vscale
+        x = (target_w - img_w) / 2 + bx * img_w + (box_w - vw) / 2
+        y = (target_h - img_h) / 2 + by * img_h + (box_h - vh) / 2
+        remaining = max(duration - video_start, 0.0)
+        if clip.audio:
+            video_audio = clip.audio.with_duration(min(clip.duration, remaining))
+        clip = clip.without_audio().resized(vscale)
+        if remaining > clip.duration:
+            clip = clip.with_effects([vfx.Freeze(t="end", total_duration=remaining)])
+        elif remaining < clip.duration:
+            clip = clip.with_duration(remaining)  # segment ends first (only if minSlideSeconds/durations disagree)
+        layers.append(clip.with_position((x, y)).with_start(video_start))
+
+    return CompositeVideoClip(layers, size=(target_w, target_h)).with_duration(duration), video_audio
 
 
 def fit_video_clip(video_path, target_w, target_h):
@@ -111,13 +141,20 @@ def build_segments(job):
         # customImagePath, which is never one of job.slides' own images -
         # only fall back to resolving slideId when there isn't one.
         image_path = n.get("customImagePath") or slides_by_id[n["slideId"]]["imagePath"]
+        # A slide's embedded clip is composited at its position on that
+        # slide's own image - so a swapped image drops it. It plays after
+        # the narration (or alone), so the segment is narration + clip.
+        video = None if n.get("customImagePath") else (slides_by_id.get(n.get("slideId")) or {}).get("video")
         audio = audio_by_seq.get(seq)
-        audio_dur = audio["durationSeconds"] if audio else min_slide
+        audio_dur = audio["durationSeconds"] if audio else 0.0
+        video_dur = VideoFileClip(video["path"]).duration if video else 0.0
         segments.append({
             "sequenceIndex": seq,
             "imagePath": image_path,
             "audioPath": audio["path"] if audio else None,
-            "duration": max(audio_dur, min_slide),
+            "video": video,
+            "videoStart": audio_dur,
+            "duration": max(audio_dur + video_dur, min_slide),
         })
     return segments
 
@@ -157,7 +194,12 @@ def render(job, transition_override=None, resolution_override=None, intro_path=N
 
     video_layers, audio_layers = [], []
     for i, seg in enumerate(segments):
-        clip = fit_image_clip(seg["imagePath"], seg["duration"], target_w, target_h)
+        clip, video_audio = fit_image_clip(
+            seg["imagePath"], seg["duration"], target_w, target_h,
+            video=seg.get("video"), video_start=seg.get("videoStart", 0.0),
+        )
+        if video_audio is not None:
+            audio_layers.append(video_audio.with_start(starts[i] + seg["videoStart"]))
         if i > 0:
             clip = apply_incoming_transition(clip, ttype, tsec)
         if i < len(segments) - 1:

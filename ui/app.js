@@ -407,9 +407,10 @@ function showReview(job) {
     const skipped = pptx.slidesWithoutNotes || [];
     $("review-notes-info").textContent =
       `Narration taken verbatim from the speaker notes of ${pptx.filename}: ${pptx.narratedCount} of `
-      + `${pptx.slideCount - pptx.hiddenCount} visible slides had notes`
+      + `${pptx.slideCount - pptx.hiddenCount} visible slides had notes or a video`
+      + (pptx.videoCount ? ` (${pptx.videoCount} with an embedded video)` : "")
       + (pptx.hiddenCount ? `, ${pptx.hiddenCount} hidden slide${pptx.hiddenCount === 1 ? "" : "s"} skipped` : "")
-      + (skipped.length ? `. Left out (no notes): ${skipped.join(", ")}.` : ".");
+      + (skipped.length ? `. Left out (no notes, no video): ${skipped.join(", ")}.` : ".");
   }
   const slidesById = Object.fromEntries(job.slides.map((s) => [s.slideId, s]));
   const alignmentBySeq = Object.fromEntries(job.alignment.map((a) => [a.sequenceIndex, a]));
@@ -431,8 +432,10 @@ function showReview(job) {
     body.className = "segment-body";
     const text = document.createElement("div");
     text.className = "script-text";
-    text.textContent = n.script;
+    text.textContent = n.script || "(no narration - the slide's video plays on its own)";
     body.appendChild(text);
+    const videoNote = buildVideoNote(slide);
+    if (videoNote) body.appendChild(videoNote);
 
     // Intake measured every bitmap on the page against what a full-size
     // render needs; say so here, before a render is spent on it.
@@ -495,6 +498,17 @@ function buildCheckboxField(id, labelText) {
   span.textContent = labelText;
   wrapper.append(input, span);
   return { wrapper, input };
+}
+
+// A slide with an embedded video (notes mode): the render plays the clip
+// at its place on the slide after the narration, or alone if there is none.
+function buildVideoNote(slide) {
+  if (!slide || !slide.video) return null;
+  const p = document.createElement("p");
+  p.className = "hint video-note";
+  const secs = slide.video.durationSeconds ? `${Math.round(slide.video.durationSeconds)} s ` : "";
+  p.textContent = `Embedded video: ${secs}clip, plays after the narration with its own sound.`;
+  return p;
 }
 
 function segmentImagePath(n, slidesById) {
@@ -590,8 +604,12 @@ function buildEditableSegment(job, short, n, slidesById, editable) {
   } else {
     const text = document.createElement("div");
     text.className = "script-text";
-    text.textContent = n.script;
+    text.textContent = n.script || "(no narration - the slide's video plays on its own)";
     body.appendChild(text);
+  }
+  if (!n.customImagePath) {
+    const videoNote = buildVideoNote(slidesById[n.slideId]);
+    if (videoNote) body.appendChild(videoNote);
   }
 
   const audio = (short.audio || []).find((a) => a.sequenceIndex === n.sequenceIndex);

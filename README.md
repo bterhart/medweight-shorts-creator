@@ -40,6 +40,12 @@ newest piece and is unverified against a real deck as of this change: its `worke
 
 ## Recently added
 
+- **Embedded videos on slides (notes mode).** A video embedded in a PPTX slide is pulled out of the deck
+  at intake (the PDF export carries nothing of it but a blank page) and, in the render, composited over the
+  slide at the shape's own position and size, played once with its own sound, after that slide's
+  narration - or alone on a slide that has a video but no notes, which now counts as a segment. The
+  Create-short prompt tells Claude which slides carry a clip and how long it is, so the clip's length is
+  budgeted into the target duration. One video per slide; needs the render image rebuilt.
 - **Speaker-notes intake.** Step 1 has a source switch. "PPTX with speaker notes + its PDF export" takes
   the deck itself and the PDF exported from it: each visible slide's notes become that slide's narration,
   verbatim, paired to PDF pages by position (hidden slides are excluded on both sides, and a count

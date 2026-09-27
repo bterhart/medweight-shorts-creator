@@ -59,8 +59,12 @@ Same steps as the old n8n workflow, now as plain functions the worker calls in o
 to the DB after each one so status polls see live progress. `job.inputMode` picks the route through them:
 `transcript` (steps 1-4) or `notes` (step 2, then `extract_pptx_notes` + `narration_from_notes` in place of
 3-4: the PPTX's speaker notes are the narration and visible slide *i* is PDF page *i*, so `job.narration` is
-written verbatim with `job.alignment` left empty - no Claude call, seconds not minutes). Both routes end at
-the same `ready_for_review` shape, so everything from step 5 on is identical:
+written verbatim with `job.alignment` left empty - no Claude call, seconds not minutes; a video embedded on
+a slide is written to `data/jobs/<id>/media/` and recorded as `slides[].video` with its position on the
+slide, and a video-only slide becomes a segment with an empty script). Both routes end at the same
+`ready_for_review` shape, so everything from step 5 on is identical - `build_short` tells Claude which
+source segments carry a clip and its length, and `synthesize_audio` makes no ElevenLabs call for an empty
+script:
 
 1. `parse_srt` — cue/duration/full-text extraction, unchanged logic.
 2. `extract_pdf_slides` — **PyMuPDF (`pymupdf`/`fitz`) instead of poppler-utils.** Renders pages to PNG and

@@ -38,7 +38,13 @@ image that must be rebuilt and pushed to ECR after any change to the files in th
 per-short render view that `backend/fargate_client.py` uploads to S3 — shaped like the job-level input
 above (`slides`/`narration`/`audio`/`params`), where `narration` is that short's `script`. A segment may
 carry a `customImagePath` (its image was replaced with an upload, or it was added post-review); when set,
-`build_segments` uses it instead of resolving `slideId` against `slides`. There, unlike the CLI path
+`build_segments` uses it instead of resolving `slideId` against `slides`. A slide may carry a `video`
+(`{path, box}` - a clip embedded in the PPTX, `box` its position as fractions of the slide): `fit_image_clip`
+composites it over the letterboxed page inside that box, starting after the segment's narration audio (at
+the segment's start if there is none), played once with its own soundtrack mixed into the audio layers,
+holding its last frame if the segment runs longer. The segment lasts narration + clip (floored at
+`minSlideSeconds`). A segment whose image was swapped drops the clip - the box would mean nothing on
+another image. There, unlike the CLI path
 above, a re-render replaces the previous one: `POST .../render` clears the stale preview and the worker
 deletes the old `video-NN.mp4` from S3 before dispatching the new render. The finished video is served to the
 UI through a presigned S3 URL; the worker stores one at completion and `GET /jobs/<id>/status` re-signs it on

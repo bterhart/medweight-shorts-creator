@@ -14,7 +14,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pymupdf
 import requests
+from mutagen.mp4 import MP4
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 import config
 import db
@@ -87,6 +89,8 @@ def _audit_page_images(page) -> dict:
     required_ppi = scale * 72.0
     ppis = []
     for info in page.get_image_info():
+        if info["width"] <= 8 or info["height"] <= 8:
+            continue  # a fill (PowerPoint exports a 1x1 px image for a solid background), not a picture
         x0, y0, x1, y1 = info["bbox"]
         w_in, h_in = (x1 - x0) / 72.0, (y1 - y0) / 72.0
         if w_in <= 0 or h_in <= 0:
@@ -135,10 +139,52 @@ def extract_pdf_slides(pdf_path: str, pdf_id: str, slides_dir: str) -> list:
     return slides
 
 
-def extract_pptx_notes(pptx_path: str) -> list:
+_R_LINK = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}link"
+
+
+def _extract_slide_video(slide, slide_number: int, media_dir: str, slide_w: int, slide_h: int) -> dict | None:
+    """The first embedded video on the slide, written out to media_dir, with
+    where it sits as fractions of the slide (the render composites it there
+    over the exported page - the PDF carries nothing of it but a blank).
+    One video per slide is supported; any further ones are logged and left."""
+    videos = []
+    for shape in slide.shapes:
+        if shape.shape_type != MSO_SHAPE_TYPE.MEDIA:
+            continue
+        video_file = shape._element.xpath(".//a:videoFile")  # python-pptx has no public accessor for the media part
+        if not video_file:
+            continue
+        part = shape.part.related_part(video_file[0].get(_R_LINK))
+        if part.content_type.startswith("video/"):
+            videos.append((shape, part))
+    if not videos:
+        return None
+    if len(videos) > 1:
+        print(f"warning: slide {slide_number} has {len(videos)} videos - only the first is used")
+    shape, part = videos[0]
+    ext = {"video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm"}.get(part.content_type, ".mp4")
+    os.makedirs(media_dir, exist_ok=True)
+    path = os.path.join(media_dir, f"slide-{slide_number:03d}{ext}")
+    with open(path, "wb") as f:
+        f.write(part.blob)
+    try:
+        duration = MP4(path).info.length
+    except Exception:
+        duration = None  # not an MP4 container; the render reads the real length anyway
+    return {
+        "path": path,
+        "contentType": part.content_type,
+        "durationSeconds": duration,
+        "box": [shape.left / slide_w, shape.top / slide_h, shape.width / slide_w, shape.height / slide_h],
+    }
+
+
+def extract_pptx_notes(pptx_path: str, media_dir: str) -> list:
     """Every slide's speaker notes, in deck order, hidden slides included
     (flagged) so the caller can drop them the same way PowerPoint's PDF
-    export does. Notes come back verbatim, whitespace-trimmed."""
+    export does. Notes come back verbatim, whitespace-trimmed. Each entry
+    also carries the slide's embedded video, if any (see
+    _extract_slide_video), written under media_dir."""
     prs = Presentation(pptx_path)
     out = []
     for i, slide in enumerate(prs.slides):
@@ -149,6 +195,7 @@ def extract_pptx_notes(pptx_path: str) -> list:
             "slideNumber": i + 1,
             "hidden": slide._element.get("show") == "0",  # python-pptx has no public accessor for this
             "notes": notes.strip(),
+            "video": _extract_slide_video(slide, i + 1, media_dir, prs.slide_width, prs.slide_height),
         })
     return out
 
@@ -157,10 +204,12 @@ def narration_from_notes(job: dict, notes: list) -> None:
     """Notes mode's stand-in for alignment + cleaning: the speaker notes ARE
     the narration, and the slide each belongs to is given by position - the
     PDF is the export of this same deck, so visible slide i is page i.
-    Writes job["narration"] verbatim (one segment per slide that has notes,
-    the rest left out), leaves job["alignment"] empty, and records the
-    counts on sources.pptx for the review UI. Permanent from here on, same
-    as clean_narration's output."""
+    Writes job["narration"] verbatim (one segment per slide that has notes
+    or an embedded video - a video-only slide gets an empty script and plays
+    its clip alone; the rest are left out), leaves job["alignment"] empty,
+    copies each video onto its slide record, and records the counts on
+    sources.pptx for the review UI. Permanent from here on, same as
+    clean_narration's output."""
     visible = [n for n in notes if not n["hidden"]]
     slides = job["slides"]
     if len(visible) != len(slides):
@@ -169,20 +218,24 @@ def narration_from_notes(job: dict, notes: list) -> None:
             f"{len(slides)} pages - the PDF must be the export of this exact deck (hidden slides are left out "
             f"of both, so they can't be the cause)"
         )
-    narration, without_notes = [], []
+    narration, without_notes, video_count = [], [], 0
     for slide, note in zip(slides, visible):
-        if note["notes"]:
+        if note["video"]:
+            slide["video"] = note["video"]
+            video_count += 1
+        if note["notes"] or note["video"]:
             narration.append({"sequenceIndex": len(narration), "slideId": slide["slideId"], "script": note["notes"]})
         else:
             without_notes.append(slide["slideId"])
     if not narration:
-        raise RuntimeError("no slide in the PPTX has speaker notes - there is nothing to narrate")
+        raise RuntimeError("no slide in the PPTX has speaker notes or a video - there is nothing to narrate")
     job["narration"] = narration
     job["alignment"] = []
     job["sources"]["pptx"].update({
         "slideCount": len(notes),
         "hiddenCount": len(notes) - len(visible),
         "narratedCount": len(narration),
+        "videoCount": video_count,
         "slidesWithoutNotes": without_notes,
     })
 
@@ -299,8 +352,17 @@ def build_short(job: dict, short: dict) -> None:
         raise RuntimeError(f"build_short: narration prompt {label!r} no longer exists in the prompt library")
     style_prompt = style_prompt_row["text"]
 
+    videos_by_id = {s["slideId"]: s["video"] for s in job.get("slides", []) if s.get("video")}
+
+    def _video_note(slide_id):
+        v = videos_by_id.get(slide_id)
+        if not v:
+            return {}
+        secs = f"{v['durationSeconds']:.0f} s " if v.get("durationSeconds") else ""
+        return {"video": f"{secs}clip embedded on this slide, with its own sound; plays after this segment's narration, or alone if the script is empty"}
+
     full_narration = [
-        {"sequence_index": n["sequenceIndex"], "slide_id": n["slideId"], "script": n["script"]}
+        {"sequence_index": n["sequenceIndex"], "slide_id": n["slideId"], "script": n["script"], **_video_note(n["slideId"])}
         for n in job["narration"]
     ]
     known_ids = {n["slideId"] for n in job["narration"]}
@@ -317,7 +379,10 @@ def build_short(job: dict, short: dict) -> None:
         "tagged with the slide_id (from the list below) it plays over - merge several source segments "
         "under one slide_id where useful, skip slides that aren't relevant to the topic or don't fit the "
         "duration, and default to the original order unless the topic genuinely requires reordering. "
-        "Never invent a slide_id that isn't in the source list below.\n\n"
+        "Never invent a slide_id that isn't in the source list below. A source segment with a \"video\" "
+        "field is a clip embedded on that slide: if you use that slide, the clip plays after whatever "
+        "script you give it (or by itself if you give it an empty script), and the clip's length counts "
+        "toward the target.\n\n"
         'Respond with ONLY JSON of the shape {"narration":[{"sequence_index":0,"slide_id":"...","script":"..."}]}, '
         "sequence_index being your own output order (0, 1, 2, ...), not the source's.\n\n"
         f"Source narration:\n{json.dumps(full_narration, indent=2)}"
@@ -331,9 +396,10 @@ def build_short(job: dict, short: dict) -> None:
         if slide_id not in known_ids:
             raise RuntimeError(f"build_short: Claude returned slide_id {slide_id!r}, not in job.narration")
         words = len((n.get("script") or "").split())
+        video_seconds = (videos_by_id.get(slide_id) or {}).get("durationSeconds") or 0
         script.append({
             "sequenceIndex": n["sequence_index"], "slideId": slide_id, "script": n.get("script", ""),
-            "estimatedWords": words, "estimatedSeconds": round((words / WORDS_PER_MINUTE) * 60),
+            "estimatedWords": words, "estimatedSeconds": round((words / WORDS_PER_MINUTE) * 60 + video_seconds),
         })
     short["script"] = sorted(script, key=lambda n: n["sequenceIndex"])
 
@@ -408,8 +474,14 @@ def synthesize_audio(short: dict, audio_dir: str, sequence_indexes: set | None =
 
     segments = [n for n in short["script"] if sequence_indexes is None or n["sequenceIndex"] in sequence_indexes]
 
+    # A video-only segment (a slide whose clip plays alone) has an empty
+    # script: no ElevenLabs call and no audio entry - the render gives it
+    # the clip's own length.
+    silent = {n["sequenceIndex"] for n in segments if not (n.get("script") or "").strip()}
     new_audio = {}
     for n in segments:
+        if n["sequenceIndex"] in silent:
+            continue
         resp = requests.post(
             f"{config.ELEVENLABS_BASE_URL}/v1/text-to-speech/{voice_id}",
             headers={"xi-api-key": config.ELEVENLABS_API_KEY, "Content-Type": "application/json"},
@@ -434,5 +506,7 @@ def synthesize_audio(short: dict, audio_dir: str, sequence_indexes: set | None =
         short["audio"] = list(new_audio.values())
     else:
         merged = {a["sequenceIndex"]: a for a in short.get("audio", [])}
+        for seq in silent:
+            merged.pop(seq, None)
         merged.update(new_audio)
         short["audio"] = sorted(merged.values(), key=lambda a: a["sequenceIndex"])

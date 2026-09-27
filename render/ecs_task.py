@@ -45,6 +45,8 @@ def rewrite_local_paths(job, local_dir):
         slide["imagePath"] = str(local_dir / "slides" / Path(slide["imagePath"]).name)
         if slide.get("textPath"):
             slide["textPath"] = str(local_dir / "slides" / Path(slide["textPath"]).name)
+        if slide.get("video"):
+            slide["video"]["path"] = str(local_dir / "media" / Path(slide["video"]["path"]).name)
     for a in job.get("audio", []):
         if a.get("path"):
             a["path"] = str(local_dir / "audio" / Path(a["path"]).name)
@@ -72,6 +74,7 @@ def main():
         s3_download_prefix(s3, bucket, f"{prefix}/slides", local_dir / "slides")
         s3_download_prefix(s3, bucket, f"{prefix}/audio", local_dir / "audio")
         s3_download_prefix(s3, bucket, f"{prefix}/custom-slides", local_dir / "custom-slides")
+        s3_download_prefix(s3, bucket, f"{prefix}/media", local_dir / "media")
         rewrite_local_paths(job, local_dir)
 
         overrides = job.get("render", {}).get("pendingOverrides") or {}

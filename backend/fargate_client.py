@@ -71,7 +71,7 @@ def dispatch_render(job: dict, short: dict, render_count: int) -> str:
 
     used_slide_ids = {n["slideId"] for n in short["script"] if n.get("slideId")}
     used_slides = [
-        {k: v for k, v in slide.items() if k in ("slideId", "pdfId", "pageNumber", "imagePath")}
+        {k: v for k, v in slide.items() if k in ("slideId", "pdfId", "pageNumber", "imagePath", "video")}
         for slide in job.get("slides", []) if slide["slideId"] in used_slide_ids
     ]
 
@@ -89,6 +89,9 @@ def dispatch_render(job: dict, short: dict, render_count: int) -> str:
         path = slide.get("imagePath")
         if path and os.path.isfile(path):
             s3.upload_file(path, config.RENDER_S3_BUCKET, f"{prefix}/slides/{os.path.basename(path)}")
+        video_path = (slide.get("video") or {}).get("path")
+        if video_path and os.path.isfile(video_path):
+            s3.upload_file(video_path, config.RENDER_S3_BUCKET, f"{prefix}/media/{os.path.basename(video_path)}")
 
     for a in short.get("audio", []):
         path = a.get("path")

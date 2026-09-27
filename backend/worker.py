@@ -92,7 +92,7 @@ def run_prepare_pipeline(job: dict) -> None:
             job["step"] = "extracting_notes"
             db.save_job(job)
             with timed("extract_pptx_notes"):
-                notes = pipeline.extract_pptx_notes(job["sources"]["pptx"]["path"])
+                notes = pipeline.extract_pptx_notes(job["sources"]["pptx"]["path"], os.path.join(job_dir, "media"))
                 pipeline.narration_from_notes(job, notes)
             job["phase"] = "ready_for_review"
             job["step"] = "ready_for_review"

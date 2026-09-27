@@ -107,8 +107,9 @@
             "path": { "type": "string" },
             "slideCount": { "type": "integer", "description": "All slides in the PPTX, hidden included." },
             "hiddenCount": { "type": "integer", "description": "Hidden slides, skipped - PowerPoint leaves them out of the PDF export too." },
-            "narratedCount": { "type": "integer", "description": "Visible slides that had speaker notes and so became narration segments." },
-            "slidesWithoutNotes": { "type": "array", "items": { "type": "string" }, "description": "slideIds of visible slides with empty notes - left out of job.narration, so no short can pick them." }
+            "narratedCount": { "type": "integer", "description": "Visible slides that had speaker notes or an embedded video and so became narration segments." },
+            "videoCount": { "type": "integer", "description": "Visible slides carrying an embedded video (see slides[].video)." },
+            "slidesWithoutNotes": { "type": "array", "items": { "type": "string" }, "description": "slideIds of visible slides with empty notes and no video - left out of job.narration, so no short can pick them." }
           }
         },
         "pdfs": {
@@ -143,9 +144,20 @@
           "imagePath": { "type": "string", "description": "Full-resolution rendition: the page rasterised so its long edge is SLIDE_IMAGE_LONG_EDGE_PX (3840 by default). What the render uses; only the slides a short's script references are ever uploaded to S3." },
           "previewImagePath": { "type": "string", "description": "Small rendition (long edge SLIDE_PREVIEW_LONG_EDGE_PX, 1280 by default) the review UI loads instead of imagePath. Absent on jobs prepared before it existed - the UI falls back to imagePath." },
           "textPath": { "type": "string", "description": "Extracted page text, given to the alignment model alongside the image itself." },
+          "video": {
+            "type": "object",
+            "description": "Notes mode only: the first video embedded on this slide in the PPTX (the PDF export carries nothing of it but a blank), written to data/jobs/<id>/media/. The render composites it over the slide image at `box` after the segment's narration (or alone on a video-only slide, whose narration script is empty), played once, its own sound mixed in, last frame held if narration + clip is shorter than minSlideSeconds. Dropped if the segment's image is swapped post-review.",
+            "required": ["path", "box"],
+            "properties": {
+              "path": { "type": "string" },
+              "contentType": { "type": "string" },
+              "durationSeconds": { "type": ["number", "null"], "description": "From the MP4 container at intake; null for other containers (the render reads the real length)." },
+              "box": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4, "description": "[left, top, width, height] as fractions of the slide." }
+            }
+          },
           "imageAudit": {
             "type": "object",
-            "description": "Effective resolution of the bitmaps embedded on this page (pixel size over placed size), measured at intake. minEffectivePpi below requiredPpi means a full-size render upscales that image; the review UI flags it. Vector content is not audited - it is rasterised at whatever DPI we choose.",
+            "description": "Effective resolution of the bitmaps embedded on this page (pixel size over placed size, fills of 8 px or under ignored), measured at intake. minEffectivePpi below requiredPpi means a full-size render upscales that image; the review UI flags it. Vector content is not audited - it is rasterised at whatever DPI we choose.",
             "properties": {
               "count": { "type": "integer" },
               "minEffectivePpi": { "type": ["integer", "null"] },
@@ -185,7 +197,7 @@
         "properties": {
           "sequenceIndex": { "type": "integer" },
           "slideId": { "type": "string" },
-          "script": { "type": "string" }
+          "script": { "type": "string", "description": "Empty for a video-only slide in notes mode: the clip plays alone, no narration is synthesized." }
         }
       }
     },
