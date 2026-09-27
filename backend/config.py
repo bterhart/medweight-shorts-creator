@@ -75,4 +75,4 @@ RENDER_ECS_CLUSTER = os.environ.get("RENDER_ECS_CLUSTER", "chatbot-shorts-cluste
 RENDER_ECS_TASK_DEFINITION = os.environ.get("RENDER_ECS_TASK_DEFINITION", "chatbot-shorts-render")
 RENDER_ECS_SUBNETS = [s for s in os.environ.get("RENDER_ECS_SUBNETS", "").split(",") if s]
 RENDER_ECS_SECURITY_GROUPS = [s for s in os.environ.get("RENDER_ECS_SECURITY_GROUPS", "").split(",") if s]
-RENDER_TIMEOUT_MINUTES = int(os.environ.get("RENDER_TIMEOUT_MINUTES", "15"))
+RENDER_TIMEOUT_MINUTES = int(os.environ.get("RENDER_TIMEOUT_MINUTES", "40"))
