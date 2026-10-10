@@ -482,6 +482,11 @@ function formatDuration(seconds) {
   return seconds < 60 ? `${seconds}s` : `${Math.round(seconds / 60)} min`;
 }
 
+function formatClock(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
 function fillSubtopicPicker(job) {
   const picker = $("short-subtopic");
   const previous = picker.value;
@@ -495,7 +500,9 @@ function fillSubtopicPicker(job) {
   }
   if (subtopics.some((s) => s.id === previous)) picker.value = previous;
   $("short-subtopic-hint").textContent = subtopics.length
-    ? "Pick one to fill in the brief and a suggested length; you can still edit both."
+    ? "Pick one to fill in the brief and a suggested length; you can still edit both. A short made from a sub-topic uses that sub-topic's slides"
+      + " (widened with neighbours only when the length needs more slides), so the same choice gives the same slide set every time."
+      + (job.subtopicsReused ? " This deck's narration matched an earlier job, so its outline was reused unchanged." : "")
     : (job.subtopicsError
       ? "Sub-topics could not be found for this job (the outline step failed) - type a topic instead."
       : "No sub-topics on this job (prepared before the outline step existed) - type a topic instead.");
@@ -945,6 +952,24 @@ function buildShortCard(job, short, slidesById) {
   // exist. Editable once the pipeline isn't mid-flight for THIS short and no
   // other short on the job is active either - same window the render button
   // below is already enabled in.
+  if (short.lengthCheck) {
+    // What the script should run to, before any voice or render is spent on it.
+    const lc = short.lengthCheck;
+    const p = document.createElement("p");
+    p.className = Math.abs(lc.estimatedSeconds - lc.targetSeconds) > lc.targetSeconds * 0.1 ? "warn-text" : "hint";
+    p.textContent = `Estimated ${formatClock(lc.estimatedSeconds)} against a ${formatClock(lc.targetSeconds)} target, `
+      + `${lc.distinctSlides} slide${lc.distinctSlides === 1 ? "" : "s"} (aimed for ${lc.wantedSlides})`
+      + (lc.revised ? ", after one revision" : "")
+      + (lc.remainingProblems && lc.remainingProblems.length ? `. Still off: ${lc.remainingProblems.join("; ")}.` : ".");
+    card.appendChild(p);
+  }
+  if (short.sourceSlides && short.sourceSlides.supporting && short.sourceSlides.supporting.length) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = `Widened beyond the sub-topic with neighbouring slides to keep the pacing: ${short.sourceSlides.supporting.join(", ")}.`;
+    card.appendChild(p);
+  }
+
   if (short.videoSlidesWithheld && short.videoSlidesWithheld.length) {
     const p = document.createElement("p");
     p.className = "hint";

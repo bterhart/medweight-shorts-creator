@@ -103,8 +103,13 @@ instead of `image` (`customVideoPath`), played full-frame after the narration:
    narrative from the full `job.narration` pool (not a per-slide shrink) and grounds it back onto whichever
    original slides it actually covers - via whichever `narration_prompts` entry the Create-short form chose
    (stored on the short as `prompt.id`/`name`). The same call names the video (`short.name`, at most 8
-   words) and gives every segment a title-card title (`script[].title`, at most 6 words); a short started
-   from a sub-topic carries `short.subtopic` and the brief names it. Shorts created before that picker existed fall back to the
+   words) and gives every segment a title-card title (`script[].title`, at most 6 words). A short started
+   from a sub-topic carries `short.subtopic` (with its `slideIds` frozen at creation) and is built from those
+   slides only, widened with deck neighbours when fewer than `target / SECONDS_PER_SLIDE` (recorded as
+   `short.sourceSlides`); the prompt states the cadence and per-segment cap, and the draft is checked
+   (`short.lengthCheck`: ±`LENGTH_TOLERANCE` of target, distinct slides, `HARD_MAX_SEGMENT_SECONDS`) with
+   one revision call when it misses. `outline_subtopics` caches by a fingerprint of the narration
+   (`DATA_DIR/outline-cache.json`), so an identical deck gets an identical outline. Shorts created before that picker existed fall back to the
    entry named "Second pass (CBT/MI/ACT/DBT narration)". A job can hold any number of these.
 
 `worker.py` prints each step's wall time to `worker.log` (`parse_srt`, `upload_slides_to_manus`,

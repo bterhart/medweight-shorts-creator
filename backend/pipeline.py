@@ -5,6 +5,7 @@ DB between steps so status polls see progress as it happens, same as the
 checkpoint pattern in the earlier n8n version."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -29,6 +30,17 @@ DURATION_OPTIONS = [45, 90, 180, 300, 420]
 # Title cards are at most this many words; a short's name at most this many.
 TITLE_MAX_WORDS = 6
 NAME_MAX_WORDS = 8
+# Pacing. A short should change slide about every SECONDS_PER_SLIDE (the
+# source decks run ~80 s/slide), so build_short asks for at least
+# target/SECONDS_PER_SLIDE distinct slides and no narrated segment longer
+# than MAX_SEGMENT_SECONDS; a sub-topic with too few slides is widened with
+# its neighbours in deck order. After the draft, the script is checked
+# against the target (LENGTH_TOLERANCE either way), the slide count and the
+# per-segment cap, and revised once if it misses.
+SECONDS_PER_SLIDE = 75
+MAX_SEGMENT_SECONDS = 90
+HARD_MAX_SEGMENT_SECONDS = 120
+LENGTH_TOLERANCE = 0.10
 # Voice providers. ElevenLabs is the original and the default for every short
 # that doesn't say otherwise (and the only one with custom voice design).
 # xAI's voices are fixed ids from its /v1/tts/voices catalogue; these three
@@ -385,6 +397,18 @@ def suggested_duration(word_count: int) -> int:
     return max(fitting) if fitting else DURATION_OPTIONS[0]
 
 
+def _outline_cache_path() -> str:
+    return os.path.join(config.DATA_DIR, "outline-cache.json")
+
+
+def narration_fingerprint(job: dict) -> str:
+    """Same deck -> same narration -> same fingerprint: the outline is reused
+    rather than regenerated, so re-submitting a PPTX gives the identical
+    sub-topics (and therefore identical slide sets for its shorts)."""
+    payload = json.dumps([[n["slideId"], n.get("script") or ""] for n in job.get("narration") or []])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def outline_subtopics(job: dict) -> None:
     """One Claude call over the whole narration, after prepare: names the
     presentation and lists the 6-12 sub-topics it covers, each with a
@@ -395,6 +419,19 @@ def outline_subtopics(job: dict) -> None:
     job["subtopics"]; raises on a bad reply (the worker treats that as a
     warning, not a failed job - shorts still work from a free-text topic)."""
     narration = job.get("narration") or []
+    fingerprint = narration_fingerprint(job)
+    cache = {}
+    if os.path.exists(_outline_cache_path()):
+        try:
+            cache = json.load(open(_outline_cache_path()))
+        except Exception:
+            cache = {}
+    if fingerprint in cache:
+        job["title"] = cache[fingerprint]["title"]
+        job["subtopics"] = copy.deepcopy(cache[fingerprint]["subtopics"])
+        job["subtopicsReused"] = True
+        print("outline_subtopics: identical narration seen before - reusing its outline")
+        return
     words_by_slide = {n["slideId"]: len((n.get("script") or "").split()) for n in narration}
     source = [{"slide_id": n["slideId"], "script": n.get("script") or "(video clip, no narration)"} for n in narration]
     prompt = (
@@ -428,6 +465,10 @@ def outline_subtopics(job: dict) -> None:
         raise RuntimeError("outline_subtopics: Claude returned no usable sub-topics")
     job["title"] = _truncate_words(parsed.get("title") or "", NAME_MAX_WORDS) or None
     job["subtopics"] = subtopics
+    job["subtopicsReused"] = False
+    cache[fingerprint] = {"title": job["title"], "subtopics": copy.deepcopy(subtopics)}
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    json.dump(cache, open(_outline_cache_path(), "w"))
 
 
 def build_short(job: dict, short: dict) -> None:
@@ -480,29 +521,65 @@ def build_short(job: dict, short: dict) -> None:
         return {"video": f"{secs}clip embedded on this slide, with its own sound; plays after this segment's narration, "
                          f"or alone if the script is empty.{said}"}
 
+    narration = [n for n in job["narration"] if n["slideId"] not in withheld]
+    order = {n["slideId"]: i for i, n in enumerate(narration)}
+    min_slides = max(1, round(target_seconds / SECONDS_PER_SLIDE))
+
+    # Source material. From a sub-topic: that sub-topic's slides, fixed at
+    # creation time (so the slide set is reproducible), widened with the
+    # deck's neighbouring slides only when there are fewer than the cadence
+    # needs. Free topic: the whole deck, as before.
+    subtopic = short.get("subtopic") or {}
+    core_ids = [s for s in (subtopic.get("slideIds") or []) if s in order]
+    supporting_ids = []
+    if core_ids:
+        lo, hi = min(order[s] for s in core_ids), max(order[s] for s in core_ids)
+        chosen = set(core_ids)
+        while len(chosen) < min_slides and (lo > 0 or hi < len(narration) - 1):
+            if hi < len(narration) - 1:
+                hi += 1; chosen.add(narration[hi]["slideId"]); supporting_ids.append(narration[hi]["slideId"])
+            if len(chosen) < min_slides and lo > 0:
+                lo -= 1; chosen.add(narration[lo]["slideId"]); supporting_ids.append(narration[lo]["slideId"])
+        source = [n for n in narration if n["slideId"] in chosen]
+    else:
+        source = narration
+    short["sourceSlides"] = {"core": core_ids or [n["slideId"] for n in source], "supporting": sorted(supporting_ids, key=order.get)}
+
+    def _role(slide_id):
+        return {"role": "supporting (adjacent in the deck - use only to reach the slide count or for context)"} if slide_id in supporting_ids else {}
+
     full_narration = [
-        {"sequence_index": n["sequenceIndex"], "slide_id": n["slideId"], "script": n["script"], **_video_note(n["slideId"])}
-        for n in job["narration"] if n["slideId"] not in withheld
+        {"sequence_index": n["sequenceIndex"], "slide_id": n["slideId"], "script": n["script"], **_role(n["slideId"]), **_video_note(n["slideId"])}
+        for n in source
     ]
     known_ids = {n["slide_id"] for n in full_narration}
     total_word_budget = round(target_seconds / 60 * WORDS_PER_MINUTE)
+    max_segment_words = round(MAX_SEGMENT_SECONDS / 60 * WORDS_PER_MINUTE)
+    want_slides = min(min_slides, len(known_ids))
 
-    subtopic = short.get("subtopic") or {}
     focus = f'the sub-topic "{subtopic["title"]}" - {short["topic"]}' if subtopic.get("title") else f'this topic: "{short["topic"]}"'
+    rules = (
+        f"Target length: about {total_word_budget} words total (~{target_seconds}s spoken at "
+        f"{WORDS_PER_MINUTE}wpm) - a hard constraint on the final video's runtime, not a suggestion; "
+        f"stay within {LENGTH_TOLERANCE:.0%} of it.\n"
+        f"Pacing: use at least {want_slides} distinct slide_ids (a slide change about every {SECONDS_PER_SLIDE}s keeps "
+        f"the video engaging), and give no single segment more than about {max_segment_words} words "
+        f"(~{MAX_SEGMENT_SECONDS}s) - split a longer point across slides instead.\n"
+    )
     prompt = (
         f"{style_prompt}\n\n"
         f"Write ONE coherent, flowing narration script on {focus}.\n"
-        f"Target length: about {total_word_budget} words total (~{target_seconds}s spoken at "
-        f"{WORDS_PER_MINUTE}wpm) - a hard constraint on the final video's runtime, not a suggestion.\n\n"
-        "The full presentation's slide-by-slide narration is below, in order, each tagged with its "
-        "slide_id. Use it as your only source material. Break your output into ordered segments, each "
-        "tagged with the slide_id (from the list below) it plays over - merge several source segments "
-        "under one slide_id where useful, skip slides that aren't relevant to the topic or don't fit the "
-        "duration, and default to the original order unless the topic genuinely requires reordering. "
-        "Never invent a slide_id that isn't in the source list below. A source segment with a \"video\" "
-        "field is a clip embedded on that slide: if you use that slide, the clip plays after whatever "
-        "script you give it (or by itself if you give it an empty script), and the clip's length counts "
-        "toward the target.\n\n"
+        f"{rules}\n"
+        "The source material is below: slide-by-slide narration, in order, each tagged with its slide_id. "
+        "Use it as your only source material. Break your output into ordered segments, each tagged with "
+        "the slide_id (from the list below) it plays over - merge several source segments under one "
+        "slide_id where useful, skip slides that aren't relevant to the topic or don't fit the duration, "
+        "and default to the original order unless the topic genuinely requires reordering. Never invent a "
+        "slide_id that isn't in the source list below. A source segment with a \"video\" field is a clip "
+        "embedded on that slide: if you use that slide, the clip plays after whatever script you give it "
+        "(or by itself if you give it an empty script), and the clip's length counts toward the target. "
+        "A segment marked \"role: supporting\" is a neighbouring slide included so the pacing can be met; "
+        "prefer the others for the substance.\n\n"
         f"Also give the video a name of at most {NAME_MAX_WORDS} words, and give every segment a title of at most "
         f"{TITLE_MAX_WORDS} words that introduces the concept it covers - it is shown as a title card as that "
         "segment begins.\n"
@@ -512,22 +589,61 @@ def build_short(job: dict, short: dict) -> None:
         f"Source narration:\n{json.dumps(full_narration, indent=2)}"
     )
 
-    parsed = _claude_json(prompt, "build_short")
+    def _parse(parsed):
+        script = []
+        for n in parsed.get("narration", []):
+            slide_id = n["slide_id"]
+            if slide_id not in known_ids:
+                raise RuntimeError(f"build_short: Claude returned slide_id {slide_id!r}, not in the source list")
+            words = len((n.get("script") or "").split())
+            video_seconds = (videos_by_id.get(slide_id) or {}).get("durationSeconds") or 0
+            script.append({
+                "sequenceIndex": n["sequence_index"], "slideId": slide_id, "script": n.get("script", ""),
+                "title": _truncate_words(n.get("title") or "", TITLE_MAX_WORDS),
+                "estimatedWords": words, "estimatedSeconds": round((words / WORDS_PER_MINUTE) * 60 + video_seconds),
+            })
+        return sorted(script, key=lambda n: n["sequenceIndex"])
 
-    script = []
-    for n in parsed.get("narration", []):
-        slide_id = n["slide_id"]
-        if slide_id not in known_ids:
-            raise RuntimeError(f"build_short: Claude returned slide_id {slide_id!r}, not in job.narration")
-        words = len((n.get("script") or "").split())
-        video_seconds = (videos_by_id.get(slide_id) or {}).get("durationSeconds") or 0
-        script.append({
-            "sequenceIndex": n["sequence_index"], "slideId": slide_id, "script": n.get("script", ""),
-            "title": _truncate_words(n.get("title") or "", TITLE_MAX_WORDS),
-            "estimatedWords": words, "estimatedSeconds": round((words / WORDS_PER_MINUTE) * 60 + video_seconds),
-        })
-    short["script"] = sorted(script, key=lambda n: n["sequenceIndex"])
+    def _problems(script):
+        total = sum(n["estimatedSeconds"] for n in script)
+        found = []
+        if total > target_seconds * (1 + LENGTH_TOLERANCE):
+            found.append(f"the script runs about {total}s against a {target_seconds}s target - cut it to within {LENGTH_TOLERANCE:.0%}")
+        elif total < target_seconds * (1 - LENGTH_TOLERANCE):
+            found.append(f"the script runs only about {total}s against a {target_seconds}s target - expand it to within {LENGTH_TOLERANCE:.0%}, using more of the source material")
+        distinct = len({n["slideId"] for n in script})
+        if distinct < want_slides:
+            found.append(f"it uses {distinct} distinct slides; use at least {want_slides}")
+        for n in script:
+            spoken = round(n["estimatedWords"] / WORDS_PER_MINUTE * 60)
+            if spoken > HARD_MAX_SEGMENT_SECONDS:
+                found.append(f"segment {n['sequenceIndex']} ({n['slideId']}) has about {spoken}s of narration - split it across slides, at most ~{MAX_SEGMENT_SECONDS}s each")
+        return total, found
+
+    parsed = _claude_json(prompt, "build_short")
+    script = _parse(parsed)
+    total, problems = _problems(script)
+    revised = False
+    if problems:
+        # One revision pass with the specific misses spelled out, then we
+        # take what we get - the card shows the estimate either way.
+        print(f"build_short: revising - {'; '.join(problems)}")
+        revision = (
+            f"{prompt}\n\nYour previous draft was:\n{json.dumps(parsed, indent=2)}\n\n"
+            f"It missed the brief: {'; '.join(problems)}. Rewrite it to fix every point above, keeping the same "
+            "JSON shape and the same rules."
+        )
+        parsed2 = _claude_json(revision, "build_short (revision)")
+        script2 = _parse(parsed2)
+        total2, problems2 = _problems(script2)
+        if len(problems2) <= len(problems):
+            parsed, script, total, problems, revised = parsed2, script2, total2, problems2, True
+    short["script"] = script
     short["name"] = _truncate_words(parsed.get("name") or "", NAME_MAX_WORDS) or short["topic"]
+    short["lengthCheck"] = {
+        "estimatedSeconds": total, "targetSeconds": target_seconds, "distinctSlides": len({n["slideId"] for n in script}),
+        "wantedSlides": want_slides, "revised": revised, "remainingProblems": problems,
+    }
 
 
 def reindex_short(short: dict, ordered_script: list) -> None:

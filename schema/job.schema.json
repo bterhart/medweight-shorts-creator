@@ -211,6 +211,7 @@
       }
     },
     "subtopicsError": { "type": ["string", "null"], "description": "Why the outline step produced nothing, when it failed." },
+    "subtopicsReused": { "type": "boolean", "description": "True when the narration's fingerprint matched an earlier job's and its outline was reused from DATA_DIR/outline-cache.json instead of regenerated - so an identical deck gets identical sub-topics." },
 
     "narration": {
       "type": "array",
@@ -246,8 +247,22 @@
           },
           "subtopic": {
             "type": ["object", "null"],
-            "description": "The job.subtopics entry this short was started from, if any (id + title at creation time). build_short names it in the brief.",
-            "properties": { "id": { "type": "string" }, "title": { "type": "string" } }
+            "description": "The job.subtopics entry this short was started from, if any, frozen at creation time (id, title, slideIds). build_short restricts the source material to slideIds (widened with deck neighbours only when fewer than the pacing needs) and names the sub-topic in the brief - so the same choice yields the same slide set.",
+            "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "slideIds": { "type": "array", "items": { "type": "string" } } }
+          },
+          "sourceSlides": {
+            "type": "object",
+            "description": "What build_short was given: core (the sub-topic's slides, or the whole deck for a free topic) and supporting (neighbours added, in deck order, to reach target/SECONDS_PER_SLIDE distinct slides).",
+            "properties": { "core": { "type": "array", "items": { "type": "string" } }, "supporting": { "type": "array", "items": { "type": "string" } } }
+          },
+          "lengthCheck": {
+            "type": "object",
+            "description": "build_short's check of the draft against the brief: estimated spoken length (words at WORDS_PER_MINUTE plus any clip) vs target, distinct slides vs the pacing target (one per SECONDS_PER_SLIDE), per-segment cap (HARD_MAX_SEGMENT_SECONDS). A miss triggers one revision pass; 'revised' says whether it was taken, 'remainingProblems' what still misses. Shown on the card before any audio or render is spent.",
+            "properties": {
+              "estimatedSeconds": { "type": "integer" }, "targetSeconds": { "type": "integer" },
+              "distinctSlides": { "type": "integer" }, "wantedSlides": { "type": "integer" },
+              "revised": { "type": "boolean" }, "remainingProblems": { "type": "array", "items": { "type": "string" } }
+            }
           },
           "prompt": {
             "type": "object",

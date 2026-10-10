@@ -178,7 +178,7 @@ def create_short(job_id):
         match = next((s for s in job.get("subtopics") or [] if s["id"] == body["subtopicId"]), None)
         if match is None:
             return jsonify({"error": "subtopicId does not match any sub-topic on this job"}), 400
-        subtopic_ref = {"id": match["id"], "title": match["title"]}
+        subtopic_ref = {"id": match["id"], "title": match["title"], "slideIds": list(match["slideIds"])}
 
     # Which prompt-library entry writes this short. Resolved to id+name now so
     # the short records what it was built with even if the entry is later

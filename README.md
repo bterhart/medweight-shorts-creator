@@ -40,6 +40,14 @@ newest piece and is unverified against a real deck as of this change: its `worke
 
 ## Recently added
 
+- **Reproducible, paced shorts.** A short started from a sub-topic now draws only on that sub-topic's
+  slides (frozen on the short when it is created), widened with the deck's neighbouring slides only when
+  the length needs more of them - so the same choice yields the same slide set. The builder is given a
+  slide cadence (one per 75 s; no segment over ~90 s) and the draft is checked against the target length
+  (±10%), the slide count and the per-segment cap, with one revision pass when it misses; the card shows
+  the estimate before any voice or render is spent. An identical deck reuses its earlier outline
+  (`data/outline-cache.json`), so its sub-topics are identical too. Wording still varies run to run -
+  the model accepts no determinism setting - but structure, slides and length no longer do.
 - **Grok (xAI) voices.** The voice dropdown now leads with Eve, Liora and Ara from xAI's speech API
   (`POST /v1/tts`, MP3 out), with the ElevenLabs voices and custom voice design kept underneath. A short
   records its `voice.provider`; everything created before is ElevenLabs. Needs `XAI_API_KEY` in `.env`.
