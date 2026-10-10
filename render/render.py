@@ -24,11 +24,32 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import os
+
 import numpy as np
 from moviepy import (
-    ImageClip, ColorClip, VideoClip, VideoFileClip, CompositeVideoClip,
+    ImageClip, ColorClip, TextClip, VideoClip, VideoFileClip, CompositeVideoClip,
     AudioFileClip, CompositeAudioClip, concatenate_videoclips, vfx, afx,
 )
+
+# Title cards: white text on black, shown over the first TITLE_CARD_SECONDS
+# of a segment while its narration already plays (title-over-voice, so the
+# cards add no time to the short), then crossfaded out to reveal the slide.
+# The first segment's card carries the short's name instead of its title.
+TITLE_CARD_SECONDS = 2.5
+TITLE_CARD_FADE = 0.4
+TITLE_FONT = os.environ.get("TITLE_FONT", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+
+
+def title_card_clip(text, target_w, target_h, duration):
+    """A full-frame black card with `text` centred in large white type,
+    wrapped to 80% of the frame width, lasting `duration` (fade included)."""
+    bg = ColorClip(size=(target_w, target_h), color=(0, 0, 0)).with_duration(duration)
+    label = TextClip(
+        font=TITLE_FONT, text=text, font_size=max(24, round(target_h / 11)), color="white",
+        method="caption", size=(round(target_w * 0.8), None), text_align="center",
+    ).with_duration(duration).with_position("center")
+    return CompositeVideoClip([bg, label], size=(target_w, target_h)).with_duration(duration)
 
 
 def parse_resolution(res_str):
@@ -138,7 +159,11 @@ def apply_outgoing_transition(clip, ttype, tsec):
     return clip
 
 
-def build_segments(job):
+def build_segments(job, title_seconds=0.0):
+    """One entry per narration segment with everything the render needs.
+    title_seconds > 0 means a title card covers the start of each segment:
+    the slide must still get minSlideSeconds of its own after the card, so
+    a segment shorter than card + minimum is stretched to that."""
     slides_by_id = {s["slideId"]: s for s in job["slides"]}
     audio_by_seq = {a["sequenceIndex"]: a for a in job["audio"]}
     min_slide = job["params"]["transition"].get("minSlideSeconds", 3.0)
@@ -170,7 +195,8 @@ def build_segments(job):
             "audioPath": audio["path"] if audio else None,
             "video": video,
             "videoStart": audio_dur,
-            "duration": max(audio_dur + video_dur, min_slide),
+            "title": (n.get("title") or "").strip(),
+            "duration": max(audio_dur + video_dur, min_slide + title_seconds),
         })
     return segments
 
@@ -187,7 +213,8 @@ def compute_starts(segments, overlap):
     return starts, t
 
 
-def render(job, transition_override=None, resolution_override=None, intro_path=None, outro_path=None):
+def render(job, transition_override=None, resolution_override=None, intro_path=None, outro_path=None,
+           title_cards=False):
     transition = dict(job["params"]["transition"])
     if transition_override:
         transition.update(transition_override)
@@ -201,7 +228,8 @@ def render(job, transition_override=None, resolution_override=None, intro_path=N
     job = json.loads(json.dumps(job))  # cheap deep copy, avoid mutating caller's job
     job["params"]["transition"] = transition
 
-    segments = build_segments(job)
+    title_seconds = TITLE_CARD_SECONDS if title_cards else 0.0
+    segments = build_segments(job, title_seconds)
     if not segments:
         raise SystemExit("Job has no narration/audio segments to render.")
 
@@ -216,6 +244,14 @@ def render(job, transition_override=None, resolution_override=None, intro_path=N
         )
         if video_audio is not None:
             audio_layers.append(video_audio.with_start(starts[i] + seg["videoStart"]))
+        if title_cards:
+            # The first card names the short; the rest introduce their segment.
+            # A segment Claude gave no title (or an added one) just gets no card.
+            text = (job.get("name") or "").strip() if i == 0 else seg["title"]
+            if text:
+                card = title_card_clip(text, target_w, target_h, title_seconds + TITLE_CARD_FADE)
+                card = card.with_effects([vfx.CrossFadeOut(TITLE_CARD_FADE)])
+                clip = CompositeVideoClip([clip, card], size=(target_w, target_h)).with_duration(seg["duration"])
         if i > 0:
             clip = apply_incoming_transition(clip, ttype, tsec)
         if i < len(segments) - 1:
@@ -265,6 +301,7 @@ def main():
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--intro-path", help="Local path to a fixed intro clip to prepend")
     parser.add_argument("--outro-path", help="Local path to a fixed outro clip to append")
+    parser.add_argument("--title-cards", action="store_true", help="Show each segment's title (the short's name first) as a card over its opening seconds")
     args = parser.parse_args()
 
     job_dir = Path(args.data_dir) / "jobs" / args.job_id
@@ -289,7 +326,7 @@ def main():
 
     final_video, ttype, resolution = render(
         job, transition_override or None, args.resolution,
-        intro_path=args.intro_path, outro_path=args.outro_path,
+        intro_path=args.intro_path, outro_path=args.outro_path, title_cards=args.title_cards,
     )
 
     out_dir = job_dir / "output"

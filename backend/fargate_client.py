@@ -77,6 +77,7 @@ def dispatch_render(job: dict, short: dict, render_count: int) -> str:
 
     render_view = {
         "jobId": job_id,
+        "name": short.get("name") or short.get("topic"),
         "slides": used_slides,
         "narration": short["script"],
         "audio": short["audio"],

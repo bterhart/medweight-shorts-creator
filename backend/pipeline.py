@@ -22,6 +22,13 @@ import config
 import db
 
 WORDS_PER_MINUTE = 130
+# The short lengths the UI offers (seconds). One list: the Create-short
+# dropdown, the schema, and the sub-topic outline's suggested length all
+# follow it.
+DURATION_OPTIONS = [45, 90, 180, 300, 420]
+# Title cards are at most this many words; a short's name at most this many.
+TITLE_MAX_WORDS = 6
+NAME_MAX_WORDS = 8
 # The prompt-library entry build_short() falls back to when a short doesn't
 # name one (shorts created before the Create-short form had a prompt picker).
 # Referenced by name, not pasted as a literal, so editing it in the library
@@ -359,6 +366,64 @@ def clean_narration(job: dict) -> None:
     ]
 
 
+def _truncate_words(text: str, max_words: int) -> str:
+    words = (text or "").split()
+    return " ".join(words[:max_words])
+
+
+def suggested_duration(word_count: int) -> int:
+    """The longest offered length that the narration for a sub-topic can fill
+    at WORDS_PER_MINUTE (never shorter than the shortest option)."""
+    seconds = word_count / WORDS_PER_MINUTE * 60
+    fitting = [d for d in DURATION_OPTIONS if d <= seconds]
+    return max(fitting) if fitting else DURATION_OPTIONS[0]
+
+
+def outline_subtopics(job: dict) -> None:
+    """One Claude call over the whole narration, after prepare: names the
+    presentation and lists the 6-12 sub-topics it covers, each with a
+    one-sentence brief and the slides it spans. The Create-short form offers
+    these so staff can make shorts without first knowing the deck. Each
+    sub-topic also gets the length its own narration can fill, computed
+    here from word counts, not guessed by the model. Writes job["title"],
+    job["subtopics"]; raises on a bad reply (the worker treats that as a
+    warning, not a failed job - shorts still work from a free-text topic)."""
+    narration = job.get("narration") or []
+    words_by_slide = {n["slideId"]: len((n.get("script") or "").split()) for n in narration}
+    source = [{"slide_id": n["slideId"], "script": n.get("script") or "(video clip, no narration)"} for n in narration]
+    prompt = (
+        "Below is a presentation's slide-by-slide narration, in order, each tagged with its slide_id.\n"
+        "1. Give the presentation a title of at most 8 words.\n"
+        "2. List the distinct sub-topics it covers - between 6 and 12, in presentation order, together "
+        "covering the whole talk. For each give a title of at most 6 words, a one-sentence brief that says "
+        "what a viewer would learn (this will be used as the brief for writing a short video on that "
+        "sub-topic), and the slide_ids it spans, in order. A slide may appear under more than one sub-topic "
+        "where it genuinely serves both; do not invent slide_ids.\n"
+        'Respond with ONLY JSON of the shape {"title":"...","subtopics":[{"title":"...","brief":"...",'
+        '"slide_ids":["..."]}]}.\n\n'
+        f"Narration:\n{json.dumps(source, indent=2)}"
+    )
+    parsed = _claude_json(prompt, "outline_subtopics")
+    subtopics = []
+    for item in parsed.get("subtopics") or []:
+        slide_ids = [s for s in (item.get("slide_ids") or []) if s in words_by_slide]
+        if not slide_ids:
+            continue
+        words = sum(words_by_slide[s] for s in slide_ids)
+        subtopics.append({
+            "id": uuid.uuid4().hex[:8],
+            "title": _truncate_words(item.get("title") or "Untitled", TITLE_MAX_WORDS),
+            "brief": (item.get("brief") or "").strip(),
+            "slideIds": slide_ids,
+            "wordCount": words,
+            "suggestedDurationSeconds": suggested_duration(words),
+        })
+    if not subtopics:
+        raise RuntimeError("outline_subtopics: Claude returned no usable sub-topics")
+    job["title"] = _truncate_words(parsed.get("title") or "", NAME_MAX_WORDS) or None
+    job["subtopics"] = subtopics
+
+
 def build_short(job: dict, short: dict) -> None:
     """Writes one coherent, duration-targeted narrative script from the
     permanent job["narration"] pool (never mutated here - unlike the old
@@ -416,9 +481,11 @@ def build_short(job: dict, short: dict) -> None:
     known_ids = {n["slide_id"] for n in full_narration}
     total_word_budget = round(target_seconds / 60 * WORDS_PER_MINUTE)
 
+    subtopic = short.get("subtopic") or {}
+    focus = f'the sub-topic "{subtopic["title"]}" - {short["topic"]}' if subtopic.get("title") else f'this topic: "{short["topic"]}"'
     prompt = (
         f"{style_prompt}\n\n"
-        f'Write ONE coherent, flowing narration script on this topic: "{short["topic"]}".\n'
+        f"Write ONE coherent, flowing narration script on {focus}.\n"
         f"Target length: about {total_word_budget} words total (~{target_seconds}s spoken at "
         f"{WORDS_PER_MINUTE}wpm) - a hard constraint on the final video's runtime, not a suggestion.\n\n"
         "The full presentation's slide-by-slide narration is below, in order, each tagged with its "
@@ -430,8 +497,12 @@ def build_short(job: dict, short: dict) -> None:
         "field is a clip embedded on that slide: if you use that slide, the clip plays after whatever "
         "script you give it (or by itself if you give it an empty script), and the clip's length counts "
         "toward the target.\n\n"
-        'Respond with ONLY JSON of the shape {"narration":[{"sequence_index":0,"slide_id":"...","script":"..."}]}, '
-        "sequence_index being your own output order (0, 1, 2, ...), not the source's.\n\n"
+        f"Also give the video a name of at most {NAME_MAX_WORDS} words, and give every segment a title of at most "
+        f"{TITLE_MAX_WORDS} words that introduces the concept it covers - it is shown as a title card as that "
+        "segment begins.\n"
+        'Respond with ONLY JSON of the shape {"name":"...","narration":[{"sequence_index":0,"slide_id":"...",'
+        '"title":"...","script":"..."}]}, sequence_index being your own output order (0, 1, 2, ...), not '
+        "the source's.\n\n"
         f"Source narration:\n{json.dumps(full_narration, indent=2)}"
     )
 
@@ -446,9 +517,11 @@ def build_short(job: dict, short: dict) -> None:
         video_seconds = (videos_by_id.get(slide_id) or {}).get("durationSeconds") or 0
         script.append({
             "sequenceIndex": n["sequence_index"], "slideId": slide_id, "script": n.get("script", ""),
+            "title": _truncate_words(n.get("title") or "", TITLE_MAX_WORDS),
             "estimatedWords": words, "estimatedSeconds": round((words / WORDS_PER_MINUTE) * 60 + video_seconds),
         })
     short["script"] = sorted(script, key=lambda n: n["sequenceIndex"])
+    short["name"] = _truncate_words(parsed.get("name") or "", NAME_MAX_WORDS) or short["topic"]
 
 
 def reindex_short(short: dict, ordered_script: list) -> None:

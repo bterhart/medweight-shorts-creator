@@ -40,6 +40,17 @@ newest piece and is unverified against a real deck as of this change: its `worke
 
 ## Recently added
 
+- **Sub-topics, names and title cards.** Prepare now ends with one Claude call that names the talk and
+  lists the 6-12 sub-topics it covers (title, one-sentence brief, slides spanned, and the length each one's
+  narration fills). The Create-short form offers them in a dropdown: picking one fills the brief and
+  length, and shows how many of its slides fit the length you choose - staff can make shorts without
+  knowing the deck. Each short gets a Claude-written name (card header, filename) and each segment a
+  title of at most six words, editable on the card without resynthesis. A **Title cards** toggle on the
+  render controls opens every segment on its title (the first on the video's name), white on black,
+  over its first 2.5 s while the narration already plays, crossfading into the slide - no added time.
+  New 7-minute length. A built-in "Physician, plain language" prompt is seeded by `backend/schema.sql`
+  (and in `docs/deployment.md` for an existing database). The render image needs rebuilding (it gains a
+  font).
 - **Embedded videos on slides (notes mode).** A video embedded in a PPTX slide is pulled out of the deck
   at intake (the PDF export carries nothing of it but a blank page) and, in the render, composited over the
   slide at the shape's own position and size, played once with its own sound, after that slide's

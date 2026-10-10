@@ -23,6 +23,13 @@ webhooks, see `archive/README.md` for why that changed):
 Serve `ui/` as static files any way you like (it's just three files) and open `index.html`. Click
 **Settings** to set the backend's base URL — leave it blank if the UI is served from the same origin.
 
+The Create-short form has a **Sub-topic** dropdown filled from `job.subtopics` (found at the end of prepare):
+picking one fills the topic box with its brief and the length with the one its narration fills, and a hint
+below the length says how many of its slides fit the chosen length (word budget at 130 wpm). Lengths go up to
+7 minutes. Each short's card is headed by its Claude-written name; every segment shows an editable
+**Title card** field (saved on its own, no resynthesis), and the render controls have a **Title cards**
+toggle.
+
 ## Flow
 
 1. **Setup** — pick a source. *Transcript + slide PDF*: drag/drop the `.srt` and PDF(s), mark one PDF

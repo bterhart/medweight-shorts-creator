@@ -20,6 +20,7 @@ const STEP_ORDERS = {
     ["extracting_pdfs", "Extracting slide images"],
     ["aligning", "Aligning transcript to slides"],
     ["cleaning_narration", "Cleaning narration text"],
+    ["outlining", "Finding sub-topics"],
     ["ready_for_review", "Ready for review"],
   ],
   notes: [
@@ -27,9 +28,12 @@ const STEP_ORDERS = {
     ["saving_inputs", "Saving uploaded files"],
     ["extracting_pdfs", "Extracting slide images"],
     ["extracting_notes", "Reading speaker notes"],
+    ["outlining", "Finding sub-topics"],
     ["ready_for_review", "Ready for review"],
   ],
 };
+
+const WORDS_PER_MINUTE = 130; // matches backend/pipeline.py
 
 // Resolution is chosen at render time (Phase 2), not at intake - it doesn't
 // affect alignment/narration/voice, and defaulting low keeps iteration fast.
@@ -412,6 +416,9 @@ function showReview(job) {
       + (pptx.hiddenCount ? `, ${pptx.hiddenCount} hidden slide${pptx.hiddenCount === 1 ? "" : "s"} skipped` : "")
       + (skipped.length ? `. Left out (no notes, no video): ${skipped.join(", ")}.` : ".");
   }
+  $("review-title").hidden = !job.title;
+  if (job.title) $("review-title").textContent = job.title;
+  fillSubtopicPicker(job);
   const slidesById = Object.fromEntries(job.slides.map((s) => [s.slideId, s]));
   const alignmentBySeq = Object.fromEntries(job.alignment.map((a) => [a.sequenceIndex, a]));
 
@@ -469,6 +476,67 @@ function showReview(job) {
 
   renderShortsList(job, slidesById);
 }
+
+// ---------- sub-topics (job.subtopics, found at the end of prepare) ----------
+function formatDuration(seconds) {
+  return seconds < 60 ? `${seconds}s` : `${Math.round(seconds / 60)} min`;
+}
+
+function fillSubtopicPicker(job) {
+  const picker = $("short-subtopic");
+  const previous = picker.value;
+  picker.innerHTML = '<option value="">— Free topic (type your own below) —</option>';
+  const subtopics = job.subtopics || [];
+  for (const s of subtopics) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = `${s.title} (${s.slideIds.length} slide${s.slideIds.length === 1 ? "" : "s"}, ~${formatDuration(s.suggestedDurationSeconds)})`;
+    picker.appendChild(opt);
+  }
+  if (subtopics.some((s) => s.id === previous)) picker.value = previous;
+  $("short-subtopic-hint").textContent = subtopics.length
+    ? "Pick one to fill in the brief and a suggested length; you can still edit both."
+    : (job.subtopicsError
+      ? "Sub-topics could not be found for this job (the outline step failed) - type a topic instead."
+      : "No sub-topics on this job (prepared before the outline step existed) - type a topic instead.");
+  updateFitHint();
+}
+
+function selectedSubtopic() {
+  const id = $("short-subtopic").value;
+  return (state.currentJob && state.currentJob.subtopics || []).find((s) => s.id === id) || null;
+}
+
+// How much of the chosen sub-topic the chosen length can hold: its slides'
+// narration in order, counted until the word budget runs out.
+function updateFitHint() {
+  const sub = selectedSubtopic();
+  const hint = $("short-fit-hint");
+  if (!sub || !state.currentJob) { hint.hidden = true; return; }
+  const words = Object.fromEntries((state.currentJob.narration || []).map((n) => [n.slideId, (n.script || "").split(/\s+/).filter(Boolean).length]));
+  const seconds = Number($("short-duration").value);
+  let budget = seconds / 60 * WORDS_PER_MINUTE, fit = 0;
+  for (const id of sub.slideIds) {
+    const w = words[id] || 0;
+    if (w > budget && fit > 0) break;
+    budget -= w; fit += 1;
+  }
+  const total = sub.slideIds.length;
+  hint.textContent = fit >= total
+    ? `All ${total} of this sub-topic's slides fit comfortably at ${formatDuration(seconds)}.`
+    : `About ${fit} of this sub-topic's ${total} slides fit at ${formatDuration(seconds)}; the rest would be condensed or dropped. Its narration fills about ${formatDuration(sub.suggestedDurationSeconds)}.`;
+  hint.hidden = false;
+}
+
+$("short-subtopic").addEventListener("change", () => {
+  const sub = selectedSubtopic();
+  if (sub) {
+    $("short-topic").value = sub.brief || sub.title;
+    $("short-duration").value = String(sub.suggestedDurationSeconds);
+  }
+  updateFitHint();
+});
+$("short-duration").addEventListener("change", updateFitHint);
 
 // ---------- shorts: create, list, render ----------
 function renderShortsList(job, slidesById) {
@@ -541,6 +609,34 @@ function buildEditableSegment(job, short, n, slidesById, editable) {
   const errorEl = document.createElement("p");
   errorEl.className = "error-text";
   errorEl.hidden = true;
+
+  // Title-card text (at most 6 words). Saving it needs no audio work, so
+  // it applies immediately and doesn't go through the unsaved-text guard.
+  const titleRow = document.createElement("div");
+  titleRow.className = "field-row title-row";
+  const titleLabel = document.createElement("span");
+  titleLabel.className = "hint";
+  titleLabel.textContent = "Title card:";
+  titleRow.appendChild(titleLabel);
+  if (editable) {
+    const titleInput = document.createElement("input");
+    titleInput.type = "text";
+    titleInput.className = "title-edit";
+    titleInput.maxLength = 60;
+    titleInput.placeholder = "up to 6 words (blank = no card)";
+    titleInput.value = n.title || "";
+    const saveTitleBtn = document.createElement("button");
+    saveTitleBtn.type = "button";
+    saveTitleBtn.className = "secondary-btn";
+    saveTitleBtn.textContent = "Save title";
+    saveTitleBtn.addEventListener("click", () => saveSegmentTitle(short.shortId, n.sequenceIndex, titleInput.value.trim(), errorEl));
+    titleRow.append(titleInput, saveTitleBtn);
+  } else {
+    const t = document.createElement("span");
+    t.textContent = n.title || "(none)";
+    titleRow.appendChild(t);
+  }
+  body.appendChild(titleRow);
 
   if (editable) {
     const textArea = document.createElement("textarea");
@@ -660,6 +756,12 @@ function buildAddSegmentForm(short) {
     position.appendChild(opt);
   }
 
+  const titleInput = document.createElement("input");
+  titleInput.type = "text";
+  titleInput.className = "title-edit";
+  titleInput.maxLength = 60;
+  titleInput.placeholder = "Title card (up to 6 words, optional)";
+
   const textArea = document.createElement("textarea");
   textArea.rows = 2;
   textArea.placeholder = "Narration for the new slide (may be left empty if you add a video - it then plays on its own)";
@@ -701,15 +803,33 @@ function buildAddSegmentForm(short) {
     if (!image && !video) { showError(errorEl, "An image and/or a video is required."); return; }
     if (!text && !video) { showError(errorEl, "Narration text is required unless you add a video."); return; }
     if (!confirmDiscardUnsaved(textArea)) return;
-    addSegment(short.shortId, Number(position.value), text, image, video, errorEl);
+    addSegment(short.shortId, Number(position.value), text, image, video, titleInput.value.trim(), errorEl);
   });
 
   const row = document.createElement("div");
   row.className = "field-row";
   row.append(position, addBtn);
 
-  wrapper.append(textArea, fileLabel, videoLabel, row, errorEl);
+  wrapper.append(titleInput, textArea, fileLabel, videoLabel, row, errorEl);
   return wrapper;
+}
+
+async function saveSegmentTitle(shortId, seq, title, errorEl) {
+  showError(errorEl, "");
+  try {
+    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/shorts/${shortId}/segments/${seq}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
+    const short = (state.currentJob.shorts || []).find((s) => s.shortId === shortId);
+    const seg = short && short.script.find((n) => n.sequenceIndex === seq);
+    if (seg) seg.title = data.title;  // keep local state current without a full re-render of the cards
+  } catch (err) {
+    showError(errorEl, `Failed to save title: ${err.message}`);
+  }
 }
 
 async function saveSegmentText(shortId, seq, text, errorEl) {
@@ -760,10 +880,11 @@ async function deleteSegment(shortId, seq, errorEl) {
   }
 }
 
-async function addSegment(shortId, position, text, image, video, errorEl) {
+async function addSegment(shortId, position, text, image, video, title, errorEl) {
   showError(errorEl, "");
   const form = new FormData();
   form.append("script", text);
+  form.append("title", title || "");
   form.append("position", String(position));
   if (image) form.append("image", image, image.name);
   if (video) form.append("video", video, video.name);
@@ -785,8 +906,14 @@ function buildShortCard(job, short, slidesById) {
   card.className = "short-card";
 
   const header = document.createElement("h4");
-  header.textContent = `${short.topic} — ${short.targetDurationSeconds}s — ${short.phase.replace(/_/g, " ")}`;
+  header.textContent = `${short.name || short.topic} — ${short.targetDurationSeconds}s — ${short.phase.replace(/_/g, " ")}`;
   card.appendChild(header);
+  if (short.name || short.subtopic) {
+    const sub = document.createElement("p");
+    sub.className = "hint";
+    sub.textContent = (short.subtopic ? `Sub-topic: ${short.subtopic.title}. ` : "") + `Brief: ${short.topic}`;
+    card.appendChild(sub);
+  }
 
   if (short.phase === "failed") {
     const err = document.createElement("p");
@@ -852,17 +979,23 @@ function buildShortCard(job, short, slidesById) {
     const download = document.createElement("a");
     download.className = "primary-btn";
     download.href = short.render.outputUrl;
-    download.download = `${short.topic.trim().replace(/\W+/g, "-").toLowerCase()}.mp4`;
+    download.download = `${(short.name || short.topic).trim().replace(/\W+/g, "-").toLowerCase()}.mp4`;
     download.textContent = "Download video";
     card.append(video, download);
   }
 
   const introToggle = buildCheckboxField(`intro-${short.shortId}`, "Include intro");
   const outroToggle = buildCheckboxField(`outro-${short.shortId}`, "Include outro");
+  const titleToggle = buildCheckboxField(`titles-${short.shortId}`, "Title cards");
   const toggles = document.createElement("div");
   toggles.className = "field-row";
-  toggles.append(introToggle.wrapper, outroToggle.wrapper);
+  toggles.append(introToggle.wrapper, outroToggle.wrapper, titleToggle.wrapper);
   card.appendChild(toggles);
+  const titleHint = document.createElement("p");
+  titleHint.className = "hint";
+  titleHint.textContent = "Title cards: each segment opens on its title (the first on the video's name), white on black, "
+    + "while the narration already plays; it fades into the slide after 2.5 s and adds no time. Edit titles on the segments above.";
+  card.appendChild(titleHint);
 
   const controls = document.createElement("div");
   controls.className = "field-row";
@@ -902,7 +1035,7 @@ function buildShortCard(job, short, slidesById) {
     if (!confirmDiscardUnsaved()) return;
     triggerShortRender(
       short.shortId, transitionType.value, aspect.value, quality.value,
-      introToggle.input.checked, outroToggle.input.checked, errorEl);
+      introToggle.input.checked, outroToggle.input.checked, titleToggle.input.checked, errorEl);
   });
 
   controls.append(transitionType, aspect, quality, renderBtn);
@@ -916,7 +1049,7 @@ function buildShortCard(job, short, slidesById) {
   return card;
 }
 
-async function triggerShortRender(shortId, transitionType, aspect, quality, includeIntro, includeOutro, errorEl) {
+async function triggerShortRender(shortId, transitionType, aspect, quality, includeIntro, includeOutro, titleCards, errorEl) {
   showError(errorEl, "");
   const resolution = RESOLUTION_MAP[aspect][quality];
   const t = state.currentJob.params.transition;
@@ -927,6 +1060,7 @@ async function triggerShortRender(shortId, transitionType, aspect, quality, incl
     resolution,
     includeIntro,
     includeOutro,
+    titleCards,
   };
 
   try {
@@ -963,6 +1097,7 @@ $("create-short-btn").addEventListener("click", async () => {
   const voiceMode = $("short-voice-preset").value === "custom" ? "custom" : "preset";
   const body = {
     topic,
+    subtopicId: $("short-subtopic").value || null,
     targetDurationSeconds: Number($("short-duration").value),
     promptId: $("short-prompt").value,
     voice: {

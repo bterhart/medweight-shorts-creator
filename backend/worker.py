@@ -60,6 +60,23 @@ def fail_short(job: dict, short: dict, step: str, message: str, detail: str = ""
     db.save_job(job)
 
 
+def _outline(job: dict) -> None:
+    """The sub-topic outline (pipeline.outline_subtopics) is the last prepare
+    step in both intake modes. It is a convenience for the Create-short
+    form, so its failure is a warning on the job, never a failed prepare -
+    shorts still work from a typed topic."""
+    job["step"] = "outlining"
+    db.save_job(job)
+    try:
+        with timed("outline_subtopics"):
+            pipeline.outline_subtopics(job)
+        job.pop("subtopicsError", None)
+    except Exception as e:
+        job["subtopics"] = []
+        job["subtopicsError"] = f"{type(e).__name__}: {e}"
+        print(f"warning: outline_subtopics failed - the job is still usable: {job['subtopicsError']}")
+
+
 def run_prepare_pipeline(job: dict) -> None:
     """Two intake modes share the slide extraction and diverge after it.
     'transcript' (the original): parse the SRT, align it to the slides with
@@ -94,6 +111,8 @@ def run_prepare_pipeline(job: dict) -> None:
             with timed("extract_pptx_notes"):
                 notes = pipeline.extract_pptx_notes(job["sources"]["pptx"]["path"], os.path.join(job_dir, "media"))
                 pipeline.narration_from_notes(job, notes)
+            db.save_job(job)
+            _outline(job)
             job["phase"] = "ready_for_review"
             job["step"] = "ready_for_review"
             db.save_job(job)
@@ -109,6 +128,8 @@ def run_prepare_pipeline(job: dict) -> None:
         db.save_job(job)
         with timed(f"clean_narration ({len(job['alignment'])} segments)"):
             pipeline.clean_narration(job)
+        db.save_job(job)
+        _outline(job)
 
         # Duration-based condensing, voice resolution, and audio synthesis
         # are deferred to a later step that doesn't exist yet (per explicit

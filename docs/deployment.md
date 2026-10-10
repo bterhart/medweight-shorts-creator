@@ -102,6 +102,17 @@ your own machine while testing). Open it, click **Settings**, set the webhook ba
 Flask app is reachable — e.g. `https://medweight.ca/chatbot-shorts` (no trailing slash; `app.js` appends
 `/jobs`, `/files`, etc. itself).
 
+## Built-in prompt for an existing database
+
+`backend/schema.sql` seeds a "Physician, plain language" prompt on a fresh install. For a database created
+before it existed, load just that statement once (it is `INSERT IGNORE`, so re-running is harmless):
+
+```
+mysql -u chatbot_shorts -p chatbot_shorts < <(sed -n '/^INSERT IGNORE INTO narration_prompts/,/^);/p' /home/medweight/chatbot-shorts/backend/schema.sql)
+```
+
+It then appears in both prompt dropdowns on the next page load.
+
 ## Pulling an update
 
 ```

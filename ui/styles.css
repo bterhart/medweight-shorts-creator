@@ -61,6 +61,9 @@ main { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; 
 .warn-text { color: var(--step-active); font-size: 0.85rem; }
 .video-note { color: var(--accent); }
 .video-transcript { color: var(--muted); }
+.review-title { font-size: 1.1rem; font-weight: 600; margin: 4px 0 8px; }
+.title-row { align-items: center; }
+.title-edit { flex: 1; min-width: 180px; }
 .video-placeholder { width: 160px; height: 90px; border-radius: 4px; background: #000; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; }
 
 .field-group { margin-block: 14px; display: flex; flex-direction: column; gap: 6px; }

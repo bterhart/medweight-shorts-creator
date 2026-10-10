@@ -35,6 +35,7 @@
         "extracting_pdfs",
         "extracting_notes",
         "aligning",
+        "outlining",
         "cleaning_narration",
         "ready_for_review",
         "condensing_narration",
@@ -189,6 +190,28 @@
       }
     },
 
+    "title": {
+      "type": ["string", "null"],
+      "description": "The presentation's title, at most 8 words, from pipeline.outline_subtopics (the last prepare step). Shown above the review list."
+    },
+    "subtopics": {
+      "type": "array",
+      "description": "The distinct sub-topics the talk covers, from one Claude call over the whole narration at the end of prepare (step 'outlining'), in presentation order. The Create-short form offers these so staff need not know the deck: choosing one fills the topic box with `brief` and the length with `suggestedDurationSeconds`. Empty (with subtopicsError set) if the outline failed - a warning, never a failed prepare - and absent on jobs prepared before the step existed.",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "brief", "slideIds", "wordCount", "suggestedDurationSeconds"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string", "description": "At most 6 words." },
+          "brief": { "type": "string", "description": "One sentence: what a viewer would learn. Used verbatim as a short's topic/brief when picked." },
+          "slideIds": { "type": "array", "items": { "type": "string" }, "description": "The narration slides this sub-topic spans, in order; validated against job.narration." },
+          "wordCount": { "type": "integer", "description": "Total narration words across slideIds - computed, not model-estimated." },
+          "suggestedDurationSeconds": { "type": "integer", "description": "The longest offered length (pipeline.DURATION_OPTIONS) that wordCount fills at WORDS_PER_MINUTE." }
+        }
+      }
+    },
+    "subtopicsError": { "type": ["string", "null"], "description": "Why the outline step produced nothing, when it failed." },
+
     "narration": {
       "type": "array",
       "description": "Populated once: during 'cleaning_narration' from job.alignment's raw excerpts (kept untouched alongside this, so cleaning is never irreversible), or in notes mode during 'extracting_notes' straight from the PPTX's speaker notes, verbatim, with job.alignment left empty - full-length, cleaned of filler/personal references, not sized to any duration. Permanent for the life of the job: nothing after this point ever mutates it. This is the 1:1 slide-to-narration pool every short (below) is built from.",
@@ -216,7 +239,16 @@
             "type": "string",
             "description": "Required. What this short is about, e.g. 'full presentation overview' or 'the wastewater treatment section' - the only way to tell shorts on the same job apart, so it's mandatory rather than optional."
           },
-          "targetDurationSeconds": { "type": "integer", "enum": [45, 90, 180, 300] },
+          "targetDurationSeconds": { "type": "integer", "enum": [45, 90, 180, 300, 420], "description": "One of pipeline.DURATION_OPTIONS." },
+          "name": {
+            "type": ["string", "null"],
+            "description": "The video's name, at most 8 words, written by build_short alongside the script (falls back to topic). Used for the card header, the download filename, and the first title card."
+          },
+          "subtopic": {
+            "type": ["object", "null"],
+            "description": "The job.subtopics entry this short was started from, if any (id + title at creation time). build_short names it in the brief.",
+            "properties": { "id": { "type": "string" }, "title": { "type": "string" } }
+          },
           "prompt": {
             "type": "object",
             "description": "The narration_prompts entry build_short writes this short with, chosen in the Create-short form. id null means the short predates that picker and build_short falls back to the library entry named pipeline.SHORT_NARRATION_PROMPT_NAME.",
@@ -263,6 +295,10 @@
                   "description": "Which job.slides entry this segment is nominally grounded in. Null for a segment added post-review with no corresponding original slide. Ignored for rendering when customImagePath is set, but kept for lineage."
                 },
                 "script": { "type": "string" },
+                "title": {
+                  "type": "string",
+                  "description": "Title-card text for this segment, at most 6 words, written by build_short (an added segment gets whatever the form supplied, possibly empty). Editable via PATCH .../segments/<seq> with {title} alone, which needs no resynthesis. Shown by the render when the short was rendered with the titleCards override; empty means no card for this segment. The first segment's card shows the short's name instead."
+                },
                 "estimatedWords": { "type": "integer" },
                 "estimatedSeconds": { "type": "number" },
                 "customImagePath": {
@@ -297,7 +333,7 @@
           },
           "render": {
             "type": "object",
-            "description": "This short's own render state - independent of every other short's.",
+            "description": "This short's own render state - independent of every other short's. pendingOverrides (set by POST .../render, consumed by dispatch) may carry type/transitionSeconds/minSlideSeconds/resolution, includeIntro, includeOutro, and titleCards (each segment opens on its title card - white on black over the first 2.5 s while the narration already plays, crossfaded into the slide; adds no time unless a segment is shorter than card + minSlideSeconds).",
             "properties": {
               "renderedAt": { "type": ["string", "null"], "format": "date-time" },
               "outputUrl": {

@@ -124,6 +124,7 @@
       <h2>3. Review script &amp; slides</h2>
       <p class="hint">This is the full 1:1 slide-to-narration alignment — permanent for this job, never shortened or rewritten in place. Create as many shorts as you like from it below.</p>
       <p id="review-notes-info" class="hint" hidden></p>
+      <p id="review-title" class="review-title" hidden></p>
       <button id="back-btn" class="secondary-btn" type="button">&larr; Back to setup</button>
       <p class="hint">Going back starts a new submission — this won't resume or reuse the job you just prepared.</p>
       <div id="segment-list" class="segment-list"></div>
@@ -133,7 +134,15 @@
         <p class="hint">Each short is a fresh, coherent narration written from the full narration above — condensed to a target length and grounded back onto the slides it actually covers (not all of them). Give each one a topic so you can tell them apart, e.g. a "full presentation overview" and a "90s teaser" side by side.</p>
 
         <div class="field-group">
-          <label for="short-topic">Topic (required)</label>
+          <label for="short-subtopic">Sub-topic</label>
+          <select id="short-subtopic">
+            <option value="">— Free topic (type your own below) —</option>
+          </select>
+          <p id="short-subtopic-hint" class="hint">Sub-topics are found automatically when a job is prepared. Pick one to fill in the brief and a suggested length; you can still edit both.</p>
+        </div>
+
+        <div class="field-group">
+          <label for="short-topic">Topic / brief (required)</label>
           <input id="short-topic" type="text" placeholder="e.g. full presentation overview, or the wastewater treatment section" />
         </div>
 
@@ -144,7 +153,9 @@
             <option value="90" selected>90s</option>
             <option value="180">3 min</option>
             <option value="300">5 min</option>
+            <option value="420">7 min</option>
           </select>
+          <p id="short-fit-hint" class="hint" hidden></p>
         </div>
 
         <div class="field-group">

@@ -27,7 +27,12 @@ python render/render.py <jobId> --data-dir data --transition-type wipe --transit
 
 Options: `--transition-type {cut,fade,crossfade,wipe,slide}`, `--transition-seconds`,
 `--min-slide-seconds`, `--resolution WxH`, `--fps`, `--intro-path`/`--outro-path` (fixed clips to
-prepend/append, letterboxed to the target resolution, keeping their own audio).
+prepend/append, letterboxed to the target resolution, keeping their own audio), `--title-cards` (each
+segment opens on its `title` - the first on the job's `name` - as white text on black over its first
+`TITLE_CARD_SECONDS` (2.5 s) while the narration already plays, crossfaded into the slide over
+`TITLE_CARD_FADE`; a segment shorter than card + `minSlideSeconds` is stretched so the slide still gets its
+minimum; needs a TrueType font at `TITLE_FONT`, DejaVu Sans Bold by default, which the Dockerfile
+installs).
 
 Output goes to `data/jobs/<jobId>/output/video-NN.mp4` (`NN` increments on every render — old renders
 are kept, not overwritten).

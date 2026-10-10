@@ -160,6 +160,17 @@ def create_short(job_id):
         return jsonify({"error": "topic is required"}), 400
     if not target_duration or not voice.get("mode"):
         return jsonify({"error": "targetDurationSeconds and voice are required"}), 400
+    if target_duration not in pipeline.DURATION_OPTIONS:
+        return jsonify({"error": f"targetDurationSeconds must be one of {pipeline.DURATION_OPTIONS}"}), 400
+
+    # A sub-topic from the job's outline, if the short was started from one:
+    # recorded for lineage, and build_short names it in the brief.
+    subtopic_ref = None
+    if body.get("subtopicId"):
+        match = next((s for s in job.get("subtopics") or [] if s["id"] == body["subtopicId"]), None)
+        if match is None:
+            return jsonify({"error": "subtopicId does not match any sub-topic on this job"}), 400
+        subtopic_ref = {"id": match["id"], "title": match["title"]}
 
     # Which prompt-library entry writes this short. Resolved to id+name now so
     # the short records what it was built with even if the entry is later
@@ -175,6 +186,7 @@ def create_short(job_id):
     short = {
         "shortId": short_id, "createdAt": now_iso(),
         "topic": topic, "targetDurationSeconds": target_duration,
+        "subtopic": subtopic_ref, "name": None,
         "prompt": prompt_ref,
         "voice": {
             "mode": voice["mode"],
@@ -222,6 +234,8 @@ def trigger_short_render(job_id, short_id):
         overrides["includeIntro"] = True
     if body.get("includeOutro"):
         overrides["includeOutro"] = True
+    if body.get("titleCards"):
+        overrides["titleCards"] = True
 
     render_state = short.setdefault("render", {})
     # A re-render replaces the previous render rather than sitting beside
@@ -247,7 +261,9 @@ def trigger_short_render(job_id, short_id):
 def edit_segment_text(job_id, short_id, seq):
     """Rewrites one segment's narration text - queues just that segment for
     resynthesis (phase='editing') rather than touching any other segment's
-    audio. Only available once a short has a script+audio to edit."""
+    audio - and/or its title-card text, which needs no audio work and so
+    applies immediately when it is the only change. Only available once a
+    short has a script+audio to edit."""
     job = db.get_job(job_id)
     if not job:
         return jsonify({"error": "not found"}), 404
@@ -262,6 +278,13 @@ def edit_segment_text(job_id, short_id, seq):
         return jsonify({"error": "segment not found"}), 404
 
     body = request.get_json(silent=True) or {}
+    if "title" in body:
+        segment["title"] = " ".join((body.get("title") or "").split()[:pipeline.TITLE_MAX_WORDS])
+    if "script" not in body:
+        if "title" not in body:
+            return jsonify({"error": "script or title is required"}), 400
+        db.save_job(job)  # title only: no resynthesis, no phase change
+        return jsonify({"jobId": job_id, "shortId": short_id, "sequenceIndex": seq, "title": segment["title"], "phase": short["phase"]})
     text = (body.get("script") or "").strip()
     if not text:
         return jsonify({"error": "script is required"}), 400
@@ -416,6 +439,7 @@ def add_segment(job_id, short_id):
     words = len(text.split())
     new_segment = {
         "sequenceIndex": None, "slideId": None, "script": text,
+        "title": " ".join((request.form.get("title") or "").split()[:pipeline.TITLE_MAX_WORDS]),
         "estimatedWords": words, "estimatedSeconds": round((words / pipeline.WORDS_PER_MINUTE) * 60 + video_seconds),
         "customImagePath": path,
         "customVideoPath": video_path,

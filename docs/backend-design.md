@@ -63,7 +63,10 @@ written verbatim with `job.alignment` left empty - no Claude call, seconds not m
 a slide is written to `data/jobs/<id>/media/` and recorded as `slides[].video` with its position on the
 slide and its transcript from ElevenLabs speech-to-text (`transcribe_video` - a failure is a warning, the
 clip still renders), and a video-only slide becomes a segment with an empty script). Both routes end at
-the same `ready_for_review` shape, so everything from step 5 on is identical - `build_short` tells Claude
+the same `ready_for_review` shape - after one more shared step, `outline_subtopics` (step `outlining`): one Claude call
+over the whole narration that names the talk (`job.title`) and lists its sub-topics (`job.subtopics`, with the
+slides each spans and the offered length its narration fills, computed from word counts); a failure there is
+a warning on the job, not a failed prepare - so everything from step 5 on is identical - `build_short` tells Claude
 which source segments carry a clip, its length and what it says, withholds any clip longer than
 `MAX_VIDEO_SHARE` of the target (recorded on the short as `videoSlidesWithheld`), and `synthesize_audio`
 makes no ElevenLabs call for an empty script. `POST .../segments` accepts a `video` upload alongside or
@@ -99,7 +102,9 @@ instead of `image` (`customVideoPath`), played full-frame after the narration:
    automatic prepare flow): one Anthropic Messages API call that writes a single coherent, duration-targeted
    narrative from the full `job.narration` pool (not a per-slide shrink) and grounds it back onto whichever
    original slides it actually covers - via whichever `narration_prompts` entry the Create-short form chose
-   (stored on the short as `prompt.id`/`name`). Shorts created before that picker existed fall back to the
+   (stored on the short as `prompt.id`/`name`). The same call names the video (`short.name`, at most 8
+   words) and gives every segment a title-card title (`script[].title`, at most 6 words); a short started
+   from a sub-topic carries `short.subtopic` and the brief names it. Shorts created before that picker existed fall back to the
    entry named "Second pass (CBT/MI/ACT/DBT narration)". A job can hold any number of these.
 
 `worker.py` prints each step's wall time to `worker.log` (`parse_srt`, `upload_slides_to_manus`,

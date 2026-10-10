@@ -100,6 +100,7 @@ def main():
             resolution_override=overrides.get("resolution"),
             intro_path=str(intro_path) if intro_path else None,
             outro_path=str(outro_path) if outro_path else None,
+            title_cards=bool(overrides.get("titleCards")),
         )
 
         out_path = local_dir / "output" / f"video-{render_count:02d}.mp4"
