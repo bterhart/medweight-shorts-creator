@@ -26,7 +26,8 @@ Serve `ui/` as static files any way you like (it's just three files) and open `i
 The Create-short form has a **Sub-topic** dropdown filled from `job.subtopics` (found at the end of prepare):
 picking one fills the topic box with its brief and the length with the one its narration fills, and a hint
 below the length says how many of its slides fit the chosen length (word budget at 130 wpm). Lengths go up to
-7 minutes. Each short's card is headed by its Claude-written name; every segment shows an editable
+7 minutes. The voice dropdown leads with the Grok voices (Eve, Liora, Ara; option values `xai:<id>`) and keeps
+the ElevenLabs presets and custom description below; the request carries `voice.provider`. Each short's card is headed by its Claude-written name; every segment shows an editable
 **Title card** field (saved on its own, no resynthesis), and the render controls have a **Title cards**
 toggle.
 

@@ -36,10 +36,13 @@ newest piece and is unverified against a real deck as of this change: its `worke
 - **Custom ElevenLabs voices.** Voice selection is currently limited to a small set of ElevenLabs' preset
   library voices (see the voice dropdown in `ui/`). Need to support voices we've cloned/created ourselves
   in ElevenLabs, not just the defaults — likely means accepting an arbitrary voice ID rather than only the
-  presets baked into the UI.
+  presets baked into the UI. (Grok voices, below, are now the default.)
 
 ## Recently added
 
+- **Grok (xAI) voices.** The voice dropdown now leads with Eve, Liora and Ara from xAI's speech API
+  (`POST /v1/tts`, MP3 out), with the ElevenLabs voices and custom voice design kept underneath. A short
+  records its `voice.provider`; everything created before is ElevenLabs. Needs `XAI_API_KEY` in `.env`.
 - **Sub-topics, names and title cards.** Prepare now ends with one Claude call that names the talk and
   lists the 6-12 sub-topics it covers (title, one-sentence brief, slides spanned, and the length each one's
   narration fills). The Create-short form offers them in a dropdown: picking one fills the brief and

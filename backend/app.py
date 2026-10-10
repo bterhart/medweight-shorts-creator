@@ -162,6 +162,14 @@ def create_short(job_id):
         return jsonify({"error": "targetDurationSeconds and voice are required"}), 400
     if target_duration not in pipeline.DURATION_OPTIONS:
         return jsonify({"error": f"targetDurationSeconds must be one of {pipeline.DURATION_OPTIONS}"}), 400
+    provider = voice.get("provider") or "elevenlabs"
+    if provider not in pipeline.VOICE_PROVIDERS:
+        return jsonify({"error": f"voice.provider must be one of {list(pipeline.VOICE_PROVIDERS)}"}), 400
+    if provider == "xai":
+        if voice["mode"] != "preset" or voice.get("presetVoiceId") not in pipeline.XAI_VOICES:
+            return jsonify({"error": f"a Grok voice must be one of {sorted(pipeline.XAI_VOICES)} (no custom descriptions)"}), 400
+        if not config.XAI_API_KEY:
+            return jsonify({"error": "Grok voices need XAI_API_KEY in backend/.env"}), 400
 
     # A sub-topic from the job's outline, if the short was started from one:
     # recorded for lineage, and build_short names it in the brief.
@@ -189,6 +197,7 @@ def create_short(job_id):
         "subtopic": subtopic_ref, "name": None,
         "prompt": prompt_ref,
         "voice": {
+            "provider": provider,
             "mode": voice["mode"],
             "presetVoiceId": voice.get("presetVoiceId"),
             "customDescription": voice.get("customDescription"),

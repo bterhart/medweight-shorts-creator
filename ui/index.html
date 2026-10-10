@@ -161,13 +161,20 @@
         <div class="field-group">
           <label>Voice</label>
           <select id="short-voice-preset">
-            <option value="21m00Tcm4TlvDq8ikWAM">Rachel — US female, warm</option>
-            <option value="pNInz6obpgDQGcFmaJgB">Adam — US male, deep</option>
-            <option value="EXAVITQu4vr4xnSDxMaL">Bella — US female, soft</option>
-            <option value="ErXwobaYiN019PkySvjV">Antoni — US male, calm</option>
-            <option value="custom">Custom voice description…</option>
+            <optgroup label="Grok (xAI)">
+              <option value="xai:eve" selected>Eve</option>
+              <option value="xai:liora">Liora</option>
+              <option value="xai:ara">Ara</option>
+            </optgroup>
+            <optgroup label="ElevenLabs">
+              <option value="21m00Tcm4TlvDq8ikWAM">Rachel — US female, warm</option>
+              <option value="pNInz6obpgDQGcFmaJgB">Adam — US male, deep</option>
+              <option value="EXAVITQu4vr4xnSDxMaL">Bella — US female, soft</option>
+              <option value="ErXwobaYiN019PkySvjV">Antoni — US male, calm</option>
+              <option value="custom">Custom voice description…</option>
+            </optgroup>
           </select>
-          <p class="hint">Preset IDs are ElevenLabs' commonly-used default library voices — verify they're available on your account, or replace with your own.</p>
+          <p class="hint">Grok voices need <code>XAI_API_KEY</code> on the server. The ElevenLabs entries are its default library voices — verify they're available on your account, or replace with your own.</p>
           <textarea id="short-voice-custom" placeholder="e.g. 50s male, Scottish accent, warm documentary narrator" hidden></textarea>
         </div>
 

@@ -34,6 +34,9 @@ DB_PORT = int(os.environ.get("CHATBOT_SHORTS_DB_PORT", "3306"))
 
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# xAI (Grok) text-to-speech - the second voice provider (pipeline.XAI_VOICES).
+XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
+XAI_BASE_URL = os.environ.get("XAI_BASE_URL", "https://api.x.ai")
 
 # Overridable so tests can point at a local mock instead of the real APIs.
 ELEVENLABS_BASE_URL = os.environ.get("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io")

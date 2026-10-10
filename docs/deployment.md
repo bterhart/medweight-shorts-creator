@@ -67,8 +67,8 @@ host/user/password/database you choose.)
 cp /home/medweight/chatbot-shorts/backend/.env.example /home/medweight/chatbot-shorts/backend/.env
 ```
 
-Fill in `.env`: DB credentials from step 4, plus `ELEVENLABS_API_KEY` / `ANTHROPIC_API_KEY` (use
-freshly rotated keys — never ones that have appeared in a chat transcript). The `ALIGNMENT_*` entries are
+Fill in `.env`: DB credentials from step 4, plus `ELEVENLABS_API_KEY` / `ANTHROPIC_API_KEY` / `XAI_API_KEY`
+(the Grok voices; use freshly rotated keys — never ones that have appeared in a chat transcript). The `ALIGNMENT_*` entries are
 optional and default sensibly (Opus 5, `high` effort, fallbacks on), as are `SLIDE_IMAGE_LONG_EDGE_PX` /
 `SLIDE_PREVIEW_LONG_EDGE_PX` (3840 / 1280 - see `.env.example`; a 74-slide deck at the default is a few hundred
 MB under `data/jobs/<id>/slides/`, so keep an eye on the account's disk quota). `.env` is gitignored; it never gets

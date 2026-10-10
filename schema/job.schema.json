@@ -261,8 +261,9 @@
             "type": "object",
             "required": ["mode"],
             "properties": {
+              "provider": { "type": "string", "enum": ["elevenlabs", "xai"], "default": "elevenlabs", "description": "Which speech API synthesizes this short. Absent on shorts created before the field existed, meaning elevenlabs. xai (Grok) supports mode=preset only, with presetVoiceId one of pipeline.XAI_VOICES (eve, liora, ara)." },
               "mode": { "type": "string", "enum": ["preset", "custom"] },
-              "presetVoiceId": { "type": ["string", "null"], "description": "ElevenLabs voice_id from the curated dropdown. Required when mode=preset." },
+              "presetVoiceId": { "type": ["string", "null"], "description": "ElevenLabs voice_id from the curated dropdown, or an xAI voice id when provider=xai. Required when mode=preset." },
               "customDescription": { "type": ["string", "null"], "description": "Freeform voice description for ElevenLabs Voice Design. Required when mode=custom." },
               "resolvedVoiceId": { "type": ["string", "null"], "description": "Filled in during 'resolving_voice'. Cached in data/voice-cache.json for mode=custom." }
             }

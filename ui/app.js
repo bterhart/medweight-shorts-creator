@@ -911,7 +911,9 @@ function buildShortCard(job, short, slidesById) {
   if (short.name || short.subtopic) {
     const sub = document.createElement("p");
     sub.className = "hint";
-    sub.textContent = (short.subtopic ? `Sub-topic: ${short.subtopic.title}. ` : "") + `Brief: ${short.topic}`;
+    const v = short.voice || {};
+    const voiceLabel = v.provider === "xai" ? `Grok ${v.presetVoiceId}` : (v.mode === "custom" ? "ElevenLabs custom" : "ElevenLabs");
+    sub.textContent = (short.subtopic ? `Sub-topic: ${short.subtopic.title}. ` : "") + `Brief: ${short.topic}. Voice: ${voiceLabel}.`;
     card.appendChild(sub);
   }
 
@@ -1094,15 +1096,19 @@ $("create-short-btn").addEventListener("click", async () => {
   $("create-short-status").hidden = false;
   $("create-short-status").textContent = "Creating short — condensing narration and synthesizing voice…";
 
-  const voiceMode = $("short-voice-preset").value === "custom" ? "custom" : "preset";
+  // Option values: "xai:<id>" for Grok voices, a bare ElevenLabs voice id, or "custom".
+  const choice = $("short-voice-preset").value;
+  const voiceMode = choice === "custom" ? "custom" : "preset";
+  const provider = choice.startsWith("xai:") ? "xai" : "elevenlabs";
   const body = {
     topic,
     subtopicId: $("short-subtopic").value || null,
     targetDurationSeconds: Number($("short-duration").value),
     promptId: $("short-prompt").value,
     voice: {
+      provider,
       mode: voiceMode,
-      presetVoiceId: voiceMode === "preset" ? $("short-voice-preset").value : null,
+      presetVoiceId: voiceMode === "preset" ? choice.replace(/^xai:/, "") : null,
       customDescription: voiceMode === "custom" ? $("short-voice-custom").value.trim() : null,
     },
   };

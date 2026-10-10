@@ -29,6 +29,12 @@ DURATION_OPTIONS = [45, 90, 180, 300, 420]
 # Title cards are at most this many words; a short's name at most this many.
 TITLE_MAX_WORDS = 6
 NAME_MAX_WORDS = 8
+# Voice providers. ElevenLabs is the original and the default for every short
+# that doesn't say otherwise (and the only one with custom voice design).
+# xAI's voices are fixed ids from its /v1/tts/voices catalogue; these three
+# are the ones offered (verified live: all female, multilingual, MP3 out).
+VOICE_PROVIDERS = ("elevenlabs", "xai")
+XAI_VOICES = {"eve": "Eve", "liora": "Liora", "ara": "Ara"}
 # The prompt-library entry build_short() falls back to when a short doesn't
 # name one (shorts created before the Create-short form had a prompt picker).
 # Referenced by name, not pasted as a literal, so editing it in the library
@@ -552,10 +558,16 @@ def _voice_cache_path() -> str:
     return os.path.join(config.DATA_DIR, "voice-cache.json")
 
 
+def voice_provider(voice: dict) -> str:
+    """'elevenlabs' unless the short says 'xai' - shorts created before the
+    field existed have no provider and are ElevenLabs."""
+    return voice.get("provider") or "elevenlabs"
+
+
 def resolve_voice(short: dict) -> None:
     voice = short["voice"]
     if voice["mode"] == "preset":
-        voice["resolvedVoiceId"] = voice["presetVoiceId"]
+        voice["resolvedVoiceId"] = voice["presetVoiceId"]  # both providers: the preset id is the id
         return
 
     description = voice["customDescription"] or ""
@@ -590,6 +602,9 @@ def synthesize_audio(short: dict, audio_dir: str, sequence_indexes: set | None =
     scratch, same as the original one-shot condensing behavior."""
     os.makedirs(audio_dir, exist_ok=True)
     voice_id = short["voice"]["resolvedVoiceId"]
+    provider = voice_provider(short["voice"])
+    if provider == "xai" and not config.XAI_API_KEY:
+        raise RuntimeError("this short uses a Grok voice but XAI_API_KEY is not set in backend/.env")
     from mutagen.mp3 import MP3
 
     segments = [n for n in short["script"] if sequence_indexes is None or n["sequenceIndex"] in sequence_indexes]
@@ -602,12 +617,22 @@ def synthesize_audio(short: dict, audio_dir: str, sequence_indexes: set | None =
     for n in segments:
         if n["sequenceIndex"] in silent:
             continue
-        resp = requests.post(
-            f"{config.ELEVENLABS_BASE_URL}/v1/text-to-speech/{voice_id}",
-            headers={"xi-api-key": config.ELEVENLABS_API_KEY, "Content-Type": "application/json"},
-            json={"text": n["script"], "model_id": "eleven_multilingual_v2"},
-            timeout=60,
-        )
+        if provider == "xai":
+            # Verified live: POST /v1/tts returns audio/mpeg (24 kHz mono MP3),
+            # a 2,300-character segment in one call, 404 for an unknown voice.
+            resp = requests.post(
+                f"{config.XAI_BASE_URL}/v1/tts",
+                headers={"Authorization": f"Bearer {config.XAI_API_KEY}", "Content-Type": "application/json"},
+                json={"text": n["script"], "voice_id": voice_id, "language": "en"},
+                timeout=120,
+            )
+        else:
+            resp = requests.post(
+                f"{config.ELEVENLABS_BASE_URL}/v1/text-to-speech/{voice_id}",
+                headers={"xi-api-key": config.ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+                json={"text": n["script"], "model_id": "eleven_multilingual_v2"},
+                timeout=60,
+            )
         resp.raise_for_status()
         seq = n["sequenceIndex"]
         # A uuid suffix, not just seq, because sequenceIndex is reassigned

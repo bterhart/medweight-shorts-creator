@@ -110,7 +110,8 @@ instead of `image` (`customVideoPath`), played full-frame after the narration:
 `worker.py` prints each step's wall time to `worker.log` (`parse_srt`, `upload_slides_to_manus`,
 `run_alignment`, `clean_narration`, `build_short`, `synthesize_audio`, dispatch, and render duration), so a
 slow run says where the minutes went instead of that being reconstructed after the fact.
-6. `resolve_voice` / `synthesize_audio` — ElevenLabs preset or Voice Design (cached by description hash in
+6. `resolve_voice` / `synthesize_audio` — per `short.voice.provider`: xAI's `POST /v1/tts` for the Grok voices
+   (Eve/Liora/Ara, preset only, MP3 out), or ElevenLabs preset or Voice Design (cached by description hash in
    `DATA_DIR/voice-cache.json`, same as before) and per-segment TTS, with duration read via
    `moviepy.AudioFileClip` instead of shelling out to `ffprobe` separately — one less external dependency,
    since `moviepy` (needed for rendering anyway) already resolves its own `ffmpeg` via the pip-installable
