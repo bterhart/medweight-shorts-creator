@@ -1,5 +1,6 @@
 // Chatbot Shorts UI — talks to backend/app.py:
-//   POST {apiBase}/uploads/recording                     presigned S3 PUT for a Zoom recording (recording mode)
+//   POST {apiBase}/uploads/recording                     start a multipart S3 upload of a Zoom recording (recording mode)
+//   POST {apiBase}/uploads/recording/complete            assemble its parts  /  .../abort  give it up
 //   POST {apiBase}/jobs                                  create a job
 //   PATCH {apiBase}/jobs/:jobId/trim                      move a recording's presentation start/end (re-aligns)
 //   GET  {apiBase}/jobs/:jobId/status                    poll job status
@@ -337,33 +338,79 @@ function validateSetup() {
   $("submit-btn").disabled = !ok;
 }
 
-// Recording mode: the video goes straight to S3 with a presigned PUT (the
-// cPanel host never sees it), then the job is created with the key.
-// Resolves to {key, filename}.
+// Recording mode: the video goes straight to S3 (the cPanel host never sees
+// it) as a multipart upload - UPLOAD_CONCURRENCY parts in flight at once,
+// each retried on its own - then the job is created with the key. One
+// stream over a long, lossy link crawls and restarts from zero on a drop;
+// parallel parts with per-part retry are what every large-file uploader
+// does. Resolves to {key, filename}.
+const UPLOAD_CONCURRENCY = 4;
+const UPLOAD_PART_RETRIES = 5;
+
 async function uploadRecording(file) {
   const res = await fetch(`${getApiBase()}/uploads/recording`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: file.name, sizeBytes: file.size }),
   });
-  if (!res.ok) throw new Error(`could not get an upload URL (server responded ${res.status})`);
-  const target = await res.json();
+  const target = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(target.error || `could not start the upload (server responded ${res.status})`);
   $("upload-progress").hidden = false;
-  await new Promise((resolve, reject) => {
+  const total = file.size;
+  const loaded = new Array(target.urls.length).fill(0);
+  const etags = new Array(target.urls.length);
+  const started = Date.now();
+  const paint = () => {
+    const done = loaded.reduce((a, b) => a + b, 0);
+    const pct = Math.round((done / total) * 100);
+    const rate = done / Math.max(1, (Date.now() - started) / 1000);
+    $("upload-bar-fill").style.width = `${pct}%`;
+    $("upload-progress-text").textContent = `Uploading ${(done / 1048576).toFixed(0)} of ${(total / 1048576).toFixed(0)} MB (${pct}%)`
+      + (rate > 0 ? `, ${(rate / 1048576).toFixed(1)} MB/s${target.accelerated ? " via the accelerated endpoint" : ""}` : "");
+  };
+
+  const putPart = (i) => new Promise((resolve, reject) => {
+    const blob = file.slice(i * target.partSize, Math.min(total, (i + 1) * target.partSize));
     const xhr = new XMLHttpRequest();
-    xhr.open("PUT", target.url);
-    xhr.setRequestHeader("Content-Type", target.contentType);
-    xhr.upload.onprogress = (e) => {
-      if (!e.lengthComputable) return;
-      const pct = Math.round((e.loaded / e.total) * 100);
-      $("upload-bar-fill").style.width = `${pct}%`;
-      $("upload-progress-text").textContent = `Uploading ${(e.loaded / 1048576).toFixed(0)} of ${(e.total / 1048576).toFixed(0)} MB (${pct}%)`;
+    xhr.open("PUT", target.urls[i]);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) { loaded[i] = e.loaded; paint(); } };
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(`S3 rejected part ${i + 1} (HTTP ${xhr.status})`));
+      const etag = xhr.getResponseHeader("ETag");
+      if (!etag) return reject(new Error("S3 did not expose the ETag header - the bucket's CORS rule must list ETag under ExposeHeaders"));
+      loaded[i] = blob.size; etags[i] = etag; paint(); resolve();
     };
-    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300)
-      ? resolve()
-      : reject(new Error(`S3 rejected the upload (HTTP ${xhr.status}) - check the bucket's CORS rule for this origin`));
-    xhr.onerror = () => reject(new Error("the upload to S3 failed before completing - check the bucket's CORS rule for this origin and your connection"));
-    xhr.send(file);
+    xhr.onerror = () => reject(new Error(`part ${i + 1} failed in transit`));
+    xhr.send(blob);
   });
-  $("upload-progress-text").textContent = "Upload complete.";
+
+  const failures = [];
+  const next = { i: 0 };
+  async function workerLoop() {
+    while (next.i < target.urls.length) {
+      const i = next.i++;
+      for (let attempt = 1; ; attempt++) {
+        try { await putPart(i); break; }
+        catch (err) {
+          loaded[i] = 0;
+          if (attempt >= UPLOAD_PART_RETRIES) { failures.push(err.message); return; }
+          await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)));
+        }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, target.urls.length) }, workerLoop));
+  if (failures.length) {
+    fetch(`${getApiBase()}/uploads/recording/abort`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: target.key, uploadId: target.uploadId }) }).catch(() => {});
+    throw new Error(`${failures[0]} after ${UPLOAD_PART_RETRIES} attempts - check the connection and the bucket's CORS rule for this origin, then try again`);
+  }
+  $("upload-progress-text").textContent = "Assembling the upload…";
+  const done = await fetch(`${getApiBase()}/uploads/recording/complete`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: target.key, uploadId: target.uploadId, parts: etags.map((eTag, i) => ({ partNumber: i + 1, eTag })) }),
+  });
+  const result = await done.json().catch(() => ({}));
+  if (!done.ok) throw new Error(result.error || `could not complete the upload (server responded ${done.status})`);
+  $("upload-progress-text").textContent = `Upload complete (${(result.sizeBytes / 1048576).toFixed(0)} MB).`;
   return { key: target.key, filename: file.name };
 }
 

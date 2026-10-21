@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 import config
@@ -38,6 +39,24 @@ def _s3():
     if _s3_client is None:
         _s3_client = boto3.client("s3", region_name=config.AWS_REGION)
     return _s3_client
+
+
+_s3_upload_client = None
+
+
+def _s3_for_browser_uploads():
+    """The client that signs the browser's part uploads. With
+    RENDER_S3_ACCELERATE on, its URLs point at the bucket's Transfer
+    Acceleration endpoint (the nearest AWS edge, then Amazon's network to
+    the bucket's region) - what makes a far-away, high-latency upload fast.
+    The bucket must have acceleration enabled (docs/deployment.md)."""
+    global _s3_upload_client
+    if _s3_upload_client is None:
+        _s3_upload_client = boto3.client(
+            "s3", region_name=config.AWS_REGION,
+            config=Config(s3={"use_accelerate_endpoint": bool(config.RENDER_S3_ACCELERATE)}),
+        )
+    return _s3_upload_client
 
 
 def _upload_shared_asset(s3, filename: str, key: str) -> None:
@@ -91,25 +110,63 @@ def _run_task(environment: dict) -> str:
 
 # ------------------------------------------------------ recording ingest ----
 
-UPLOAD_URL_EXPIRES_SECONDS = 3600
+UPLOAD_URL_EXPIRES_SECONDS = 6 * 3600  # a slow link may need hours for one recording
+UPLOAD_PART_BYTES = 16 * 1024 * 1024   # S3's minimum is 5 MB (except the last part); 16 MB keeps a retry cheap
+UPLOAD_MAX_BYTES = 5 * 1024 ** 3        # S3's single-object limit; a 2.5 h 1080p Zoom recording is ~0.5 GB
 RECORDING_CONTENT_TYPE = "video/mp4"
 
 
-def presigned_recording_upload(filename: str) -> dict:
-    """A one-hour presigned PUT the browser uploads the recording with -
-    directly to S3, never through the cPanel host (a session recording is
-    hundreds of MB). The key sits under uploads/<id>/ because the job that
-    will own it does not exist yet; the ingest task deletes the object
-    once it has what it needs. Needs the bucket's CORS to allow PUT from
-    the UI's origin (docs/deployment.md)."""
+def start_recording_upload(filename: str, size_bytes: int) -> dict:
+    """Opens an S3 multipart upload for the browser to send the recording
+    with - directly to S3, never through the cPanel host - and signs one
+    URL per UPLOAD_PART_BYTES part. Parts go up in parallel and a failed
+    part is retried alone, which is what makes a hundreds-of-MB upload
+    over a long, lossy link both fast and survivable (one PUT of the whole
+    file crawls on one TCP stream and starts over on any drop). The key
+    sits under uploads/<id>/ because the job that will own it does not
+    exist yet; the ingest task deletes the object once it has what it
+    needs. Needs the bucket's CORS to allow PUT from the UI's origin and to
+    expose ETag (docs/deployment.md)."""
+    if not 0 < size_bytes <= UPLOAD_MAX_BYTES:
+        raise ValueError(f"recording size must be between 1 byte and {UPLOAD_MAX_BYTES} bytes")
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(filename or "recording.mp4")).strip("-") or "recording.mp4"
     key = f"uploads/{uuid.uuid4()}/{safe}"
-    url = _s3().generate_presigned_url(
-        "put_object",
-        Params={"Bucket": config.RENDER_S3_BUCKET, "Key": key, "ContentType": RECORDING_CONTENT_TYPE},
-        ExpiresIn=UPLOAD_URL_EXPIRES_SECONDS,
+    s3 = _s3_for_browser_uploads()
+    upload_id = s3.create_multipart_upload(Bucket=config.RENDER_S3_BUCKET, Key=key, ContentType=RECORDING_CONTENT_TYPE)["UploadId"]
+    part_count = -(-size_bytes // UPLOAD_PART_BYTES)
+    urls = [
+        s3.generate_presigned_url(
+            "upload_part",
+            Params={"Bucket": config.RENDER_S3_BUCKET, "Key": key, "UploadId": upload_id, "PartNumber": n},
+            ExpiresIn=UPLOAD_URL_EXPIRES_SECONDS,
+        )
+        for n in range(1, part_count + 1)
+    ]
+    return {"key": key, "uploadId": upload_id, "partSize": UPLOAD_PART_BYTES, "urls": urls,
+            "accelerated": bool(config.RENDER_S3_ACCELERATE), "expiresIn": UPLOAD_URL_EXPIRES_SECONDS}
+
+
+def complete_recording_upload(key: str, upload_id: str, parts: list) -> int:
+    """Assembles the parts ([{partNumber, eTag}] from the browser) into the
+    object and returns its size in bytes."""
+    s3 = _s3_for_browser_uploads()
+    s3.complete_multipart_upload(
+        Bucket=config.RENDER_S3_BUCKET, Key=key, UploadId=upload_id,
+        MultipartUpload={"Parts": [{"ETag": p["eTag"], "PartNumber": int(p["partNumber"])}
+                                   for p in sorted(parts, key=lambda p: int(p["partNumber"]))]},
     )
-    return {"key": key, "url": url, "contentType": RECORDING_CONTENT_TYPE, "expiresIn": UPLOAD_URL_EXPIRES_SECONDS}
+    return int(s3.head_object(Bucket=config.RENDER_S3_BUCKET, Key=key)["ContentLength"])
+
+
+def abort_recording_upload(key: str, upload_id: str) -> None:
+    """Drops an upload the browser gave up on, so its parts stop costing
+    storage. Best effort: the worker user's policy may lack
+    s3:AbortMultipartUpload, in which case the bucket's lifecycle rule (or
+    a hand clean-up) is what removes the parts."""
+    try:
+        _s3_for_browser_uploads().abort_multipart_upload(Bucket=config.RENDER_S3_BUCKET, Key=key, UploadId=upload_id)
+    except ClientError as e:
+        print(f"warning: could not abort multipart upload {upload_id} for {key}: {e}")
 
 
 def uploaded_object_size(key: str) -> int | None:

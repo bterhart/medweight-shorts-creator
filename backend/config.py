@@ -74,6 +74,9 @@ WORKER_LOCK_FILE = os.environ.get("CHATBOT_SHORTS_WORKER_LOCK", os.path.join(DAT
 # via .env like everything else here) - no need to reference them by name.
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 RENDER_S3_BUCKET = os.environ.get("RENDER_S3_BUCKET", "")
+# Sign the browser's recording-upload URLs for the bucket's Transfer Acceleration endpoint (nearest AWS
+# edge, then Amazon's network) - needs acceleration enabled on the bucket; see docs/deployment.md.
+RENDER_S3_ACCELERATE = os.environ.get("RENDER_S3_ACCELERATE", "0").lower() in ("1", "true", "yes")
 RENDER_ECS_CLUSTER = os.environ.get("RENDER_ECS_CLUSTER", "chatbot-shorts-cluster")
 RENDER_ECS_TASK_DEFINITION = os.environ.get("RENDER_ECS_TASK_DEFINITION", "chatbot-shorts-render")
 RENDER_ECS_SUBNETS = [s for s in os.environ.get("RENDER_ECS_SUBNETS", "").split(",") if s]

@@ -49,17 +49,53 @@ def _check_short_editable(job: dict, short: dict):
 
 
 @app.post("/uploads/recording")
-def presign_recording_upload():
-    """Recording mode, step one: the browser asks for a presigned PUT and
-    uploads the video straight to S3 (see fargate_client), then creates the
-    job with the key it was given. Nothing is stored here."""
+def start_recording_upload():
+    """Recording mode, step one: the browser asks for a multipart upload
+    (one presigned URL per part) and sends the video straight to S3 in
+    parallel parts (see fargate_client), completes it below, then creates
+    the job with the key it was given. Nothing is stored here."""
     body = request.get_json(silent=True) or {}
     filename = str(body.get("filename") or "recording.mp4")
     if not filename.lower().endswith(".mp4"):
         return jsonify({"error": "the recording must be an .mp4 file"}), 400
     if not config.RENDER_S3_BUCKET:
         return jsonify({"error": "RENDER_S3_BUCKET is not configured"}), 500
-    return jsonify(fargate_client.presigned_recording_upload(filename))
+    try:
+        size = int(body.get("sizeBytes") or 0)
+        return jsonify(fargate_client.start_recording_upload(filename, size))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+def _upload_ref(body: dict):
+    key, upload_id = str(body.get("key") or ""), str(body.get("uploadId") or "")
+    if not key.startswith("uploads/") or not upload_id:
+        return None
+    return key, upload_id
+
+
+@app.post("/uploads/recording/complete")
+def complete_recording_upload():
+    body = request.get_json(silent=True) or {}
+    ref = _upload_ref(body)
+    parts = body.get("parts")
+    if not ref or not isinstance(parts, list) or not parts:
+        return jsonify({"error": "key, uploadId and a non-empty parts list are required"}), 400
+    try:
+        size = fargate_client.complete_recording_upload(ref[0], ref[1], parts)
+    except Exception as e:
+        return jsonify({"error": f"S3 would not complete the upload: {type(e).__name__}: {e}"}), 502
+    return jsonify({"key": ref[0], "sizeBytes": size})
+
+
+@app.post("/uploads/recording/abort")
+def abort_recording_upload():
+    body = request.get_json(silent=True) or {}
+    ref = _upload_ref(body)
+    if not ref:
+        return jsonify({"error": "key and uploadId are required"}), 400
+    fargate_client.abort_recording_upload(ref[0], ref[1])
+    return jsonify({"aborted": True})
 
 
 @app.post("/jobs")

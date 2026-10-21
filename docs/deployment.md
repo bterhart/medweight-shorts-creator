@@ -163,11 +163,30 @@ bucket `medweight-chatbot-shorts-amzs3` → Permissions → Cross-origin resourc
 ]
 ```
 
-Without it the upload fails in the browser with a CORS error before any job exists (the UI says so). No IAM
-change is needed: the cPanel user's existing `s3:PutObject` on the bucket signs the upload, its
-`s3:GetObject` fetches the ingest's outputs, and the ingest task deletes the upload with the task role's own
-S3 access. Uploads land under `uploads/<id>/` and are deleted after a successful ingest; a failed ingest
-leaves the file there to inspect or remove by hand.
+Without it the upload fails in the browser with a CORS error before any job exists (the UI says so), and
+without `ETag` in `ExposeHeaders` every part is rejected with a message naming it. No IAM change is needed:
+the cPanel user's existing `s3:PutObject` on the bucket covers the multipart upload (start, parts,
+complete), its `s3:GetObject` fetches the ingest's outputs, and the ingest task deletes the upload with the
+task role's own S3 access. (`s3:AbortMultipartUpload` is not granted; an upload the browser gives up on
+is aborted best-effort and otherwise its parts linger - add a lifecycle rule "Delete expired object delete
+markers or incomplete multipart uploads" after 1 day if that matters.) Uploads land under `uploads/<id>/`
+and are deleted after a successful ingest; a failed ingest leaves the file there to inspect or remove by hand.
+
+### Transfer Acceleration (recommended from far away)
+
+The browser sends the recording as 16 MB parts, four at a time, each retried on its own - but every part
+still travels to the bucket's region (us-east-1). From another continent over a high-latency link, one
+TCP stream to Virginia crawls (observed: ~180 KB/s on Starlink that tests at tens of Mb/s up). Transfer
+Acceleration sends each part to the nearest AWS edge instead, and Amazon's network carries it the rest of
+the way; it costs about USD 0.04 per GB on top of the transfer. Enable it once on the bucket (CloudShell):
+
+```
+aws s3api put-bucket-accelerate-configuration --bucket medweight-chatbot-shorts-amzs3 --accelerate-configuration Status=Enabled && aws s3api get-bucket-accelerate-configuration --bucket medweight-chatbot-shorts-amzs3
+```
+
+then set `RENDER_S3_ACCELERATE=1` in `backend/.env` and restart the app. The upload URLs are then signed
+for `medweight-chatbot-shorts-amzs3.s3-accelerate.amazonaws.com`; the UI's progress line says "via the
+accelerated endpoint" and shows the rate, so the difference is visible. Set it back to 0 to compare.
 
 ## Rebuilding the Fargate render image
 

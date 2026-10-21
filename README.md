@@ -78,7 +78,8 @@ newest piece and is unverified against a real deck as of this change: its `worke
   per slide; render changes need the image rebuilt.
 - **Zoom-recording intake.** "Zoom recording (.mp4)" takes the shared-screen recording with the speaker
   thumbnail and, optionally, Zoom's `.vtt` transcript. The video uploads straight from the browser to the
-  render bucket (a presigned PUT; the cPanel host never handles it) and a Fargate task running
+  render bucket as a multipart upload (16 MB parts, four in flight, each retried alone, optionally via
+  S3 Transfer Acceleration for far-away links; the cPanel host never handles it) and a Fargate task running
   `render/ingest.py` on the same image as the render decodes it once: it finds the speaker thumbnail from
   where the picture keeps moving, masks it and PowerPoint's slideshow toolbar, tells slides from camera-only
   and camera-off stretches, splits slides where ink is removed (so a build stays one slide), takes each
