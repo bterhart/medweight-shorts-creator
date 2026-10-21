@@ -48,8 +48,13 @@ state, after any builds) when the toolbar strip is emptiest, pulled at full
 resolution; the thumbnail rectangle is filled with the median colour of a
 ring just outside it (these decks have flat backgrounds).
 
-Known limit: a dark-themed deck (mostly-black slides) reads as camera or
-placeholder. The trim step and the review screen are the backstop.
+Known limits, both left to the review screen rather than tuned away:
+  - a dark-themed deck (mostly-black slides) reads as camera or placeholder;
+  - a shared window nudged by a pixel (every edge moves, 0.5% of pixels
+    read as ink removed) splits a slide into two identical segments. On the
+    calibration recording this happened twice in 57 slides. Tolerating a
+    one-pixel shift was tried and rejected: it also merges two text slides
+    laid out alike.
 """
 import argparse
 import io
@@ -176,7 +181,11 @@ def _duration(s):
 
 def _ink_moved(old, new, mask):
     """(removed, added, old_ink): fractions of pixels that went ink -> background,
-    background -> ink, and the old frame's ink fraction."""
+    background -> ink, and the old frame's ink fraction. Deliberately exact,
+    with no one-pixel tolerance: at analysis resolution a line of text is a
+    solid blob, so any tolerance hides the difference between two text slides
+    laid out alike (title and bullets in the same places), which is the
+    normal case in a deck."""
     old_ink, new_ink = old < INK_LUMINANCE, new < INK_LUMINANCE
     return (float((old_ink & ~new_ink)[mask].mean()), float((~old_ink & new_ink)[mask].mean()), float(old_ink[mask].mean()))
 
