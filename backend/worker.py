@@ -87,7 +87,9 @@ def run_recording_prepare(job: dict) -> None:
     outlining - to the same ready_for_review shape as the other modes.
     Step 'realigning' re-enters after the review screen changes the trim:
     alignment and cleaning again from the stored cues, no new ingest or
-    transcription."""
+    transcription. A job put back to phase 'prepare' at step
+    'fetching_ingest' (by hand, after a failure past the ingest) resumes
+    from the fetch: the outputs are still in S3 and nothing is re-uploaded."""
     job_dir = os.path.join(config.DATA_DIR, "jobs", job["jobId"])
     rec = job["sources"]["recording"]
     step = job.get("step")
@@ -101,23 +103,28 @@ def run_recording_prepare(job: dict) -> None:
             db.save_job(job)
             return
 
-        if step == "ingesting":
-            status = fargate_client.check_task(rec["ingest"]["taskArn"])
-            if status["state"] == "running":
-                dispatched_at = datetime.fromisoformat(rec["ingest"]["dispatchedAt"])
-                elapsed = (datetime.now(timezone.utc) - dispatched_at).total_seconds()
-                rec["ingest"]["elapsedSeconds"] = round(elapsed)
+        if step in ("ingesting", "fetching_ingest"):
+            if step == "ingesting":
+                status = fargate_client.check_task(rec["ingest"]["taskArn"])
+                if status["state"] == "running":
+                    dispatched_at = datetime.fromisoformat(rec["ingest"]["dispatchedAt"])
+                    elapsed = (datetime.now(timezone.utc) - dispatched_at).total_seconds()
+                    rec["ingest"]["elapsedSeconds"] = round(elapsed)
+                    db.save_job(job)
+                    if elapsed > config.INGEST_TIMEOUT_MINUTES * 60:
+                        fail_job(job, "ingesting", "Fargate ingest task timed out",
+                                 f"task {rec['ingest']['taskArn']} still running after {config.INGEST_TIMEOUT_MINUTES} minutes")
+                    return
+                if status["state"] != "succeeded":
+                    # ECS forgets a stopped task after about an hour; the
+                    # manifest in S3 is the durable sign the ingest finished.
+                    if not fargate_client.ingest_manifest_exists(job):
+                        fail_job(job, "ingesting", "Fargate ingest task failed", status.get("detail", ""))
+                        return
+                    print(f"  ingest task reported {status['state']} ({status.get('detail', '')}) but its manifest exists - continuing")
+                rec["ingest"]["finishedAt"] = now_iso()
+                job["step"] = "fetching_ingest"
                 db.save_job(job)
-                if elapsed > config.INGEST_TIMEOUT_MINUTES * 60:
-                    fail_job(job, "ingesting", "Fargate ingest task timed out",
-                             f"task {rec['ingest']['taskArn']} still running after {config.INGEST_TIMEOUT_MINUTES} minutes")
-                return
-            if status["state"] != "succeeded":
-                fail_job(job, "ingesting", "Fargate ingest task failed", status.get("detail", ""))
-                return
-            rec["ingest"]["finishedAt"] = now_iso()
-            job["step"] = "fetching_ingest"
-            db.save_job(job)
             with timed("fetch_ingest_outputs"):
                 result = fargate_client.fetch_ingest_outputs(job, os.path.join(job_dir, "ingest"))
             rec.update({

@@ -195,34 +195,49 @@ def dispatch_ingest(job: dict) -> str:
     })
 
 
+def ingest_manifest_exists(job: dict) -> bool:
+    """Whether the ingest task has written its ingest.json - the sign it
+    finished, independent of ECS still remembering the task (describe_tasks
+    forgets a stopped task after about an hour)."""
+    try:
+        _s3().head_object(Bucket=config.RENDER_S3_BUCKET, Key=f"{_ingest_prefix(job['jobId'])}/ingest.json")
+        return True
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+            return False
+        raise
+
+
 def fetch_ingest_outputs(job: dict, local_dir: str) -> dict:
-    """Downloads everything the ingest task wrote (ingest.json, slide
-    frames + previews, audio parts) into local_dir and returns ingest.json
-    with its relative paths made absolute under local_dir."""
+    """Downloads what the ingest task wrote into local_dir - ingest.json
+    first, then every file it names (slide frames + previews, audio parts)
+    - and returns ingest.json with its relative paths made absolute under
+    local_dir. Deliberately never lists the prefix: the manifest is the
+    authority on what exists, and the cPanel user's policy grants
+    GetObject but not ListBucket."""
     s3 = _s3()
     prefix = _ingest_prefix(job["jobId"])
     local = Path(local_dir)
-    paginator = s3.get_paginator("list_objects_v2")
-    count = 0
-    for page in paginator.paginate(Bucket=config.RENDER_S3_BUCKET, Prefix=prefix + "/"):
-        for obj in page.get("Contents", []):
-            rel = obj["Key"][len(prefix):].lstrip("/")
-            if not rel:
-                continue
-            dest = local / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            s3.download_file(config.RENDER_S3_BUCKET, obj["Key"], str(dest))
-            count += 1
+    local.mkdir(parents=True, exist_ok=True)
     manifest = local / "ingest.json"
-    if not manifest.is_file():
-        raise RuntimeError(f"the ingest task left no ingest.json under s3://{config.RENDER_S3_BUCKET}/{prefix}/ ({count} objects)")
+    try:
+        s3.download_file(config.RENDER_S3_BUCKET, f"{prefix}/ingest.json", str(manifest))
+    except ClientError as e:
+        raise RuntimeError(f"the ingest task left no ingest.json at s3://{config.RENDER_S3_BUCKET}/{prefix}/: {e}") from e
     result = json.loads(manifest.read_text())
+    wanted = []
     for seg in result.get("segments", []):
         for k in ("framePath", "previewPath"):
             if seg.get(k):
+                wanted.append(seg[k])
                 seg[k] = str(local / seg[k])
     for part in result.get("audio", []):
+        wanted.append(part["path"])
         part["path"] = str(local / part["path"])
+    for rel in wanted:
+        dest = local / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        s3.download_file(config.RENDER_S3_BUCKET, f"{prefix}/{rel}", str(dest))
     return result
 
 
