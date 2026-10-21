@@ -299,11 +299,43 @@ def narration_from_notes(job: dict, notes: list) -> None:
     })
 
 
-def _claude_json(prompt: str, what: str) -> dict:
+def _parse_json_reply(text: str) -> dict:
+    """The JSON object in a model reply: as is, or dug out of surrounding
+    prose / a code fence. strict=False accepts raw newlines and tabs inside
+    strings, the most common way a long narration string breaks a reply."""
+    try:
+        return json.loads(text, strict=False)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            raise
+        return json.loads(match.group(0), strict=False)
+
+
+def _claude_json(prompt: str, what: str, retries: int = 1) -> dict:
     """One Messages API call whose reply is expected to be a JSON object,
     tolerating a reply that wraps it in prose. Plain requests, matching the
     rest of this module. A reply cut off at max_tokens is a hard error, not
-    something to parse - it would silently drop the tail of the output."""
+    something to parse - it would silently drop the tail of the output. A
+    reply that is not valid JSON (an unescaped quote inside a long string,
+    typically) is retried up to `retries` times with the parse error quoted
+    back, before it becomes the caller's error to handle."""
+    text = _claude_text(prompt, what)
+    for attempt in range(retries + 1):
+        try:
+            return _parse_json_reply(text)
+        except json.JSONDecodeError as e:
+            if attempt >= retries:
+                raise RuntimeError(f"{what}: Claude's reply was not valid JSON after {retries + 1} attempt(s): {e}") from e
+            print(f"warning: {what}: reply was not valid JSON ({e}); asking again")
+            text = _claude_text(
+                prompt + "\n\nYour previous reply could not be parsed as JSON (" + str(e) + "). Reply again with ONLY the "
+                "JSON object: every string value on one line, double quotes inside text written as \\\" and line breaks as \\n.",
+                what,
+            )
+
+
+def _claude_text(prompt: str, what: str) -> str:
     resp = requests.post(
         f"{config.ANTHROPIC_BASE_URL}/v1/messages",
         headers={
@@ -321,14 +353,7 @@ def _claude_json(prompt: str, what: str) -> dict:
     text_block = next((block for block in data["content"] if block.get("type") == "text"), None)
     if text_block is None:
         raise RuntimeError(f"{what}: Claude response had no text block (stop_reason={data.get('stop_reason')})")
-    text = text_block["text"]
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
-            raise RuntimeError(f"{what}: Claude response contained no JSON object")
-        return json.loads(match.group(0))
+    return text_block["text"]
 
 
 def clean_narration(job: dict) -> None:
@@ -371,8 +396,26 @@ def clean_narration(job: dict) -> None:
         )
         return _claude_json(prompt, "clean_narration").get("narration", [])
 
+    uncleaned = []  # sequence indexes whose excerpt is used as is because cleaning kept failing
+
+    def clean_group_resilient(group):
+        """A group whose reply will not parse even after _claude_json's own
+        retry is split in half and each half tried on its own; a single
+        segment that still fails keeps its raw excerpt rather than failing
+        the job (the review screen shows raw excerpts anyway)."""
+        try:
+            return clean_group(group)
+        except RuntimeError as e:
+            if len(group) > 1:
+                print(f"warning: clean_narration: {e}; splitting a group of {len(group)} and retrying")
+                half = len(group) // 2
+                return clean_group_resilient(group[:half]) + clean_group_resilient(group[half:])
+            print(f"warning: clean_narration: segment {group[0]['sequence_index']} could not be cleaned ({e}); keeping its excerpt")
+            uncleaned.append(group[0]["sequence_index"])
+            return [{"sequence_index": group[0]["sequence_index"], "slide_id": group[0]["slide_id"], "script": group[0]["excerpt"]}]
+
     with ThreadPoolExecutor(max_workers=CLEAN_CONCURRENCY) as pool:
-        results = list(pool.map(clean_group, groups))
+        results = list(pool.map(clean_group_resilient, groups))
 
     cleaned_by_seq = {n["sequence_index"]: n.get("script", "") for group_result in results for n in group_result}
     missing = [a["sequenceIndex"] for a in alignment if a["sequenceIndex"] not in cleaned_by_seq]
@@ -382,6 +425,10 @@ def clean_narration(job: dict) -> None:
         {"sequenceIndex": a["sequenceIndex"], "slideId": a["slideId"], "script": cleaned_by_seq.get(a["sequenceIndex"], "")}
         for a in alignment
     ]
+    if uncleaned:
+        job["cleaningWarnings"] = sorted(uncleaned)
+    else:
+        job.pop("cleaningWarnings", None)
 
 
 def _truncate_words(text: str, max_words: int) -> str:
