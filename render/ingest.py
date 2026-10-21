@@ -16,11 +16,14 @@ How detection works. The video is decoded once at ANALYSIS_FPS frames per
 second, each downscaled to ANALYSIS_W x ANALYSIS_H greyscale and kept in
 memory (a 2.5 h recording is ~500 MB), then:
   - the speaker THUMBNAIL is found from the pixels that keep changing while
-    slides are up (the speaker moves; a slide does not). Their bounding box,
-    anchored to its corner and widened to Zoom's 16:9 tile, is masked out
-    of every comparison below and filled in every extracted frame, so a
-    speaker switch or a head turn never looks like a slide change. Falls
-    back to DEFAULT_THUMBNAIL_BOX when no compact moving region exists.
+    slides are up (the speaker moves; a slide does not). Only the speaker
+    moves, not the tile's background, so that region is a lower bound: the
+    box is anchored to its corner and widened to at least Zoom's standard
+    tile (DEFAULT_THUMBNAIL_BOX, 1/6 of each dimension, 16:9), growing
+    beyond it only when the motion does. It is masked out of every
+    comparison below and filled in every extracted frame, so a speaker
+    switch or a head turn never looks like a slide change. The default box
+    is used as is when no compact moving region exists (camera off).
     PowerPoint's slideshow toolbar (TOOLBAR_BOX, bottom-left, shown while
     the mouse moves) is masked for the same reason;
   - a second is DARK (camera shot / placeholder) when its mean luminance is
@@ -72,8 +75,10 @@ NEAR_IDENTICAL_CHANGED = 0.003  # adjacent slide segments whose frames differ in
 MIN_HOLD_SECONDS = 3         # a picture must stay put this long to count as a slide (builds/transitions don't)
 MIN_SEGMENT_SECONDS = 2      # anything shorter is noise (a flash to camera between shares, the end card)
 SHORT_SLIDE_SECONDS = 12     # a slide segment shorter than this joins its neighbouring slide (flips, transitions)
-LONG_STATIC_SECONDS = 300    # a slide held this long before the talk starts is the waiting-room card, not content
-# Zoom "shared screen with thumbnail": top-right, 1/6 of each dimension - the fallback when detection finds nothing.
+LONG_STATIC_SECONDS = 600    # a slide held this long before the talk starts is the waiting-room card, not content
+SETUP_SCRAP_SECONDS = 60     # a slide shorter than this right before the waiting-room card is the host setting up the share
+# Zoom "shared screen with thumbnail": top-right, 1/6 of each dimension (320x180 of 1920x1080, measured on a
+# recording). Detection confirms the corner and grows the box if the speaker's motion exceeds it.
 DEFAULT_THUMBNAIL_BOX = (0.8333, 0.0, 0.1667, 0.1667)
 THUMBNAIL_MOTION_FREQ = 0.1  # a pixel that changes in this fraction of bright seconds belongs to the speaker thumbnail
 THUMBNAIL_MAX_FRACTION = 0.4  # a moving region wider or taller than this is not a thumbnail: use the default box
@@ -154,6 +159,8 @@ def detect_thumbnail_box(frames, log=print):
     w = (ANALYSIS_W - x_lo if right else x_hi + 1) + pad
     h = (y_hi + 1 if top else ANALYSIS_H - y_lo) + pad
     w, h = max(w, h * 16 / 9), max(h, w * 9 / 16)  # Zoom's tile is 16:9; the speaker rarely moves across all of it
+    w = max(w, DEFAULT_THUMBNAIL_BOX[2] * ANALYSIS_W)  # ...and never less than the standard tile
+    h = max(h, DEFAULT_THUMBNAIL_BOX[3] * ANALYSIS_H)
     w = min(w, THUMBNAIL_MAX_FRACTION * ANALYSIS_W)
     h = min(h, THUMBNAIL_MAX_FRACTION * ANALYSIS_H)
     x = ANALYSIS_W - w if right else 0
@@ -392,16 +399,30 @@ def extract_audio_parts(video, out_dir, start_seconds, duration_seconds):
 def content_start_hint(segments):
     """Where the audio worth transcribing begins: after the whole opening run
     - placeholders (camera off, black), slides held LONG_STATIC_SECONDS or
-    more (the waiting-room card) and transitional scraps - up to the first
-    camera or ordinary slide segment, less AUDIO_LEAD_SECONDS. 0 if the
-    recording doesn't open that way."""
-    def opening(s):
+    more (the waiting-room card), the host's share being set up just before
+    that card, and transitional scraps - up to the first camera or ordinary
+    slide segment, less AUDIO_LEAD_SECONDS. Errs early, because a late
+    start would lose speech from the transcript while an early one only
+    sends the card's music to transcription: 0 unless the recording opens
+    on a placeholder (camera off / black) and the card is held for
+    LONG_STATIC_SECONDS."""
+    if not segments or segments[0]["kind"] != "placeholder":
+        return 0.0
+
+    def opening(k):
+        s = segments[k]
         if s["kind"] == "placeholder":
             return True
-        return s["kind"] == "slide" and (_duration(s) >= LONG_STATIC_SECONDS or _duration(s) < SHORT_SLIDE_SECONDS)
+        if s["kind"] != "slide":
+            return False
+        if _duration(s) >= LONG_STATIC_SECONDS or _duration(s) < SHORT_SLIDE_SECONDS:
+            return True
+        nxt = segments[k + 1] if k + 1 < len(segments) else None
+        return (_duration(s) < SETUP_SCRAP_SECONDS and nxt is not None and nxt["kind"] == "slide"
+                and _duration(nxt) >= LONG_STATIC_SECONDS)
 
     i = 0
-    while i < len(segments) and opening(segments[i]):
+    while i < len(segments) and opening(i):
         i += 1
     if i == 0 or i >= len(segments):
         return 0.0
@@ -428,7 +449,8 @@ def run(video, out_dir, thumbnail_box=None, log=print, with_audio=True):
                              "motion": MOTION_THRESHOLD, "still": STILL_THRESHOLD, "ink": INK_LUMINANCE,
                              "removed": REMOVED_THRESHOLD, "changed": CHANGED_THRESHOLD, "holdBreak": HOLD_BREAK_CHANGED,
                              "nearIdentical": NEAR_IDENTICAL_CHANGED, "minHold": MIN_HOLD_SECONDS,
-                             "minSegment": MIN_SEGMENT_SECONDS, "shortSlide": SHORT_SLIDE_SECONDS, "longStatic": LONG_STATIC_SECONDS}}
+                             "minSegment": MIN_SEGMENT_SECONDS, "shortSlide": SHORT_SLIDE_SECONDS, "longStatic": LONG_STATIC_SECONDS,
+                             "setupScrap": SETUP_SCRAP_SECONDS}}
     (out_dir / "ingest.json").write_text(json.dumps(result, indent=2))
     return result
 
