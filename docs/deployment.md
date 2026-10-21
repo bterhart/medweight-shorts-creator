@@ -185,12 +185,12 @@ CLI, and `~/medweight-shorts-creator` persists between CloudShell sessions. One 
 ```
 cd ~/medweight-shorts-creator && git pull && git log --oneline -1
 docker build -f render/Dockerfile -t chatbot-shorts-render:latest . 2>&1 | tail -5
-docker run --rm --entrypoint grep chatbot-shorts-render:latest -c "customImagePath\|intro\|main_ingest" /app/render.py /app/ecs_task.py /app/ingest.py
+docker run --rm --entrypoint grep chatbot-shorts-render:latest -c "customImagePath\|intro\|main_ingest\|detect_thumbnail_box" /app/render.py /app/ecs_task.py /app/ingest.py
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 377056770382.dkr.ecr.us-east-1.amazonaws.com && docker tag chatbot-shorts-render:latest 377056770382.dkr.ecr.us-east-1.amazonaws.com/chatbot-shorts-render:latest && docker push 377056770382.dkr.ecr.us-east-1.amazonaws.com/chatbot-shorts-render:latest 2>&1 | tail -3
 ```
 
 The `grep` line is a sanity check that the freshly built image contains the code you expect (all three
-counts above zero) before anything is pushed. The push ends with `latest: digest: sha256:...`. Nothing else
+counts above zero; a zero means the pattern did not match, a missing file is reported as such) before anything is pushed. The push ends with `latest: digest: sha256:...`. Nothing else
 changes: the task definition references the `:latest` tag, so the next render task pulls the new image
 automatically. The previous image stays in ECR under its digest if you ever need to roll back (retag it as
 `latest`). To confirm which image a render used, ECR → the repository → the image's "Last recorded pull
