@@ -1,10 +1,12 @@
 # Chatbot Shorts
 
-Turns a presentation into short narrated videos. Two ways in: a video transcript (`.srt`) plus the slide
-deck (`.pdf`), where Claude aligns the transcript to the slides and cleans it; or a `.pptx` whose speaker
+Turns a presentation into short narrated videos. Three ways in: a video transcript (`.srt`) plus the slide
+deck (`.pdf`), where Claude aligns the transcript to the slides and cleans it; a `.pptx` whose speaker
 notes are the narration, plus that deck's PDF export, where the notes are used as written and nothing needs
-aligning. Either way Claude then condenses the narration to a target length per short, ElevenLabs voices it,
-and the slides are assembled into a video with a chosen transition.
+aligning; or a Zoom recording of the talk (`.mp4`), where the slides are found in the video itself, the
+speech is transcribed (or Zoom's own `.vtt` is used) and each slide takes what was said while it was on
+screen. Either way Claude then condenses the narration to a target length per short, ElevenLabs or Grok
+voices it, and the slides are assembled into a video with a chosen transition.
 
 ## Layout
 
@@ -74,6 +76,23 @@ newest piece and is unverified against a real deck as of this change: its `worke
   narration plays, the clip's first frame is shown in its place. "Add a slide" also takes an MP4 (with or
   without an image, with or without text): it plays full-frame after any narration. One embedded video
   per slide; render changes need the image rebuilt.
+- **Zoom-recording intake.** "Zoom recording (.mp4)" takes the shared-screen recording with the speaker
+  thumbnail and, optionally, Zoom's `.vtt` transcript. The video uploads straight from the browser to the
+  render bucket (a presigned PUT; the cPanel host never handles it) and a Fargate task running
+  `render/ingest.py` on the same image as the render decodes it once: it finds the speaker thumbnail from
+  where the picture keeps moving, masks it and PowerPoint's slideshow toolbar, tells slides from camera-only
+  and camera-off stretches, splits slides where ink is removed (so a build stays one slide), takes each
+  slide's final frame at full resolution with the thumbnail filled from the surrounding background, and
+  writes the soundtrack out in 20-minute parts from a minute before the talk. Back on the host the
+  transcript comes from the `.vtt` or ElevenLabs speech-to-text, one Claude call trims the recording to the
+  presentation (waiting-room card, housekeeping and goodbyes out; an on-camera introduction in), alignment
+  is by time with no Claude call, and cleaning, outlining and shorts run as in transcript mode. The review
+  screen shows what was found and lets you move the start and end, which re-aligns from the stored
+  transcript. The upload is deleted from the bucket once ingest succeeds. Known limits, left to review
+  rather than tuned away: a window nudged by a pixel splits a slide into two identical frames (twice in 57
+  on the calibration recording); a dark-themed deck reads as camera. Calibrated once against a real
+  2 h 25 min session recording - every threshold corresponds to a mechanism of Zoom or PowerPoint, not to
+  that video.
 - **Speaker-notes intake.** Step 1 has a source switch. "PPTX with speaker notes + its PDF export" takes
   the deck itself and the PDF exported from it: each visible slide's notes become that slide's narration,
   verbatim, paired to PDF pages by position (hidden slides are excluded on both sides, and a count

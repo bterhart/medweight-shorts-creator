@@ -1,6 +1,7 @@
 """Flask app for the job pipeline and its shorts: POST /jobs, GET
 /jobs/<id>/status, POST /jobs/<id>/shorts, POST /jobs/<id>/shorts/<shortId>/render,
-GET /files, plus the narration-prompts library."""
+GET /files, plus the narration-prompts library, POST /uploads/recording (a
+presigned S3 PUT for recording mode's video) and PATCH /jobs/<id>/trim."""
 from __future__ import annotations
 
 import json
@@ -20,6 +21,7 @@ app = Flask(__name__)
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm"}
+INPUT_MODES = ("transcript", "notes", "recording")
 
 
 def now_iso():
@@ -46,13 +48,29 @@ def _check_short_editable(job: dict, short: dict):
     return None
 
 
+@app.post("/uploads/recording")
+def presign_recording_upload():
+    """Recording mode, step one: the browser asks for a presigned PUT and
+    uploads the video straight to S3 (see fargate_client), then creates the
+    job with the key it was given. Nothing is stored here."""
+    body = request.get_json(silent=True) or {}
+    filename = str(body.get("filename") or "recording.mp4")
+    if not filename.lower().endswith(".mp4"):
+        return jsonify({"error": "the recording must be an .mp4 file"}), 400
+    if not config.RENDER_S3_BUCKET:
+        return jsonify({"error": "RENDER_S3_BUCKET is not configured"}), 500
+    return jsonify(fargate_client.presigned_recording_upload(filename))
+
+
 @app.post("/jobs")
 def create_job():
     params = json.loads(request.form["params"])
     input_mode = params.get("inputMode") or "transcript"
-    if input_mode not in ("transcript", "notes"):
+    if input_mode not in INPUT_MODES:
         return jsonify({"error": f"unknown inputMode {input_mode!r}"}), 400
     pptx_upload = request.files.get("pptx")
+    vtt_upload = request.files.get("vtt")
+    recording = params.get("recording") or {}
     if input_mode == "notes":
         # The PDF is the export of the PPTX; notes pair to pages by position,
         # which only holds for one deck.
@@ -60,13 +78,25 @@ def create_job():
             return jsonify({"error": "a .pptx file is required for speaker-notes mode"}), 400
         if len(params.get("pdfs") or []) != 1:
             return jsonify({"error": "speaker-notes mode takes exactly one PDF: the export of that deck"}), 400
+    elif input_mode == "recording":
+        # The video went straight to S3 (POST /uploads/recording); the job
+        # only gets created once that object is really there.
+        key = str(recording.get("key") or "")
+        if not key.startswith("uploads/") or not key.lower().endswith(".mp4"):
+            return jsonify({"error": "recording mode needs the key returned by POST /uploads/recording"}), 400
+        size = fargate_client.uploaded_object_size(key)
+        if size is None:
+            return jsonify({"error": "the recording has not arrived in S3 - the upload did not complete"}), 400
+        recording["sizeBytes"] = size
+        if params.get("pdfs"):
+            return jsonify({"error": "recording mode takes no PDF: the slides come from the video"}), 400
     elif "srt" not in request.files:
         return jsonify({"error": "a transcript (.srt) is required"}), 400
     job_id = db.new_job_id()
     now = now_iso()
 
     pdf_meta = []
-    for i, p in enumerate(params["pdfs"]):
+    for i, p in enumerate(params.get("pdfs") or []):
         pdf_meta.append({
             "id": f"pdf-{i + 1}",
             "filename": p["filename"],
@@ -91,7 +121,7 @@ def create_job():
             "captions": bool(params.get("captions", False)),
         },
         "sources": {
-            "srt": None if input_mode == "notes" else {
+            "srt": None if input_mode != "transcript" else {  # recording mode fills this in during 'transcribing'
                 "filename": params["srtFilename"],
                 "path": os.path.join(job_dir(job_id), "input", "transcript.srt"),
                 "cueCount": None, "durationSeconds": None, "fullText": None,
@@ -100,6 +130,15 @@ def create_job():
                 "filename": pptx_upload.filename,
                 "path": os.path.join(job_dir(job_id), "input", "deck.pptx"),
             } if input_mode == "notes" else None,
+            "recording": {
+                "filename": recording.get("filename") or os.path.basename(recording["key"]),
+                "s3Key": recording["key"],
+                "sizeBytes": recording["sizeBytes"],
+                "vtt": {
+                    "filename": vtt_upload.filename,
+                    "path": os.path.join(job_dir(job_id), "input", "zoom-transcript.vtt"),
+                } if vtt_upload else None,
+            } if input_mode == "recording" else None,
             "pdfs": pdf_meta,
         },
         "slides": [], "alignment": [], "narration": [], "shorts": [], "activeShortId": None,
@@ -110,6 +149,9 @@ def create_job():
 
     if input_mode == "notes":
         pptx_upload.save(job["sources"]["pptx"]["path"])
+    elif input_mode == "recording":
+        if vtt_upload:
+            vtt_upload.save(job["sources"]["recording"]["vtt"]["path"])
     else:
         request.files["srt"].save(job["sources"]["srt"]["path"])
     for i, pdf in enumerate(pdf_meta):
@@ -125,6 +167,62 @@ def create_job():
 @app.get("/jobs")
 def list_jobs():
     return jsonify(db.list_jobs())
+
+
+def _parse_clock(value) -> float | None:
+    """Seconds from a number or an h:mm:ss / mm:ss string; None if neither."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        parts = [float(x) for x in str(value).strip().split(":")]
+    except ValueError:
+        return None
+    if not 1 <= len(parts) <= 3 or any(x < 0 for x in parts):
+        return None
+    seconds = 0.0
+    for x in parts:
+        seconds = seconds * 60 + x
+    return seconds
+
+
+@app.patch("/jobs/<job_id>/trim")
+def set_trim(job_id):
+    """Recording mode: the review screen moves the presentation's start/end
+    (and optionally which detected stretches to leave out). The job goes
+    back through alignment and cleaning from the stored transcript - no new
+    ingest, no new transcription - and returns to ready_for_review. Shorts
+    already built keep their own frozen scripts."""
+    job = db.get_job(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    if job.get("inputMode") != "recording":
+        return jsonify({"error": "only recording-mode jobs have a trim"}), 400
+    if job["phase"] != "ready_for_review" or job.get("activeShortId"):
+        return jsonify({"error": f"the job is busy (phase={job['phase']}) - try again when it is ready for review"}), 409
+    rec = job["sources"]["recording"]
+    if not rec.get("timeline") or not (job.get("sources", {}).get("srt") or {}).get("path"):
+        return jsonify({"error": "this job has no ingest timeline or transcript to re-align from"}), 400
+    body = request.get_json(silent=True) or {}
+    start = _parse_clock(body.get("startSeconds"))
+    end = _parse_clock(body.get("endSeconds"))
+    duration = (rec.get("video") or {}).get("durationSeconds") or rec["timeline"][-1]["endSeconds"]
+    if start is None or end is None or not 0 <= start < end <= duration + 1:
+        return jsonify({"error": f"start and end must satisfy 0 <= start < end <= {duration:.0f} seconds"}), 400
+    known = {s["index"] for s in rec["timeline"]}
+    try:
+        excluded = sorted({int(i) for i in body.get("excludedSegments", (rec.get("trim") or {}).get("excludedSegments", []))})
+    except (TypeError, ValueError):
+        return jsonify({"error": "excludedSegments must be a list of segment indexes"}), 400
+    if any(i not in known for i in excluded):
+        return jsonify({"error": "excludedSegments names a segment that is not on the timeline"}), 400
+    rec["trim"] = {"startSeconds": start, "endSeconds": min(end, duration), "excludedSegments": excluded,
+                   "reason": "set on the review screen", "source": "manual"}
+    job["phase"] = "prepare"
+    job["step"] = "realigning"
+    job["error"] = None
+    job["updatedAt"] = now_iso()
+    db.save_job(job)
+    return jsonify({"jobId": job_id, "phase": job["phase"], "step": job["step"], "trim": rec["trim"]})
 
 
 @app.get("/jobs/<job_id>/status")

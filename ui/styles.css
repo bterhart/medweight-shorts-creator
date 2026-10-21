@@ -107,6 +107,10 @@ textarea { min-height: 60px; resize: vertical; }
   font-size: 0.9rem;
 }
 .pdf-list { list-style: none; padding: 0; margin: 0; }
+.upload-progress { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.upload-bar { flex: 1; height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.upload-bar-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+.recording-info { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 8px 0; display: flex; flex-direction: column; gap: 6px; }
 .pdf-list li .filename { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pdf-list li button { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 1rem; }
 .pdf-list li button:hover { color: var(--text); }

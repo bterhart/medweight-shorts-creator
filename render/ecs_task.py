@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""ECS Fargate entrypoint: downloads a prepared job's assets from S3, renders
-the video (same render() used for local CLI rendering), and uploads the
-result back to S3. Reads job_id/bucket/prefix/render_count from environment
-variables set via ECS task container overrides - this container is never
-invoked any other way.
+"""ECS Fargate entrypoint, two modes picked by the MODE environment variable
+(set via ECS task container overrides - this container is never invoked any
+other way):
+  render (default): downloads a prepared short's assets from S3, renders the
+      video (same render() used for local CLI rendering), uploads the result.
+  ingest: downloads an uploaded Zoom recording, runs ingest.run() on it
+      (slide detection, frames, audio parts, timeline), uploads the outputs
+      under the job's ingest prefix, then deletes the recording - the
+      upload was only ever a hand-off, and the task role is the one with
+      delete rights on the bucket.
 
 On any failure, prints a traceback to stderr (captured by CloudWatch Logs)
 and exits non-zero, so the polling side (worker.py on cPanel) can detect
@@ -17,6 +22,7 @@ from pathlib import Path
 
 import boto3
 
+import ingest
 from render import render as render_video
 
 # Fixed, non-job-specific keys - uploaded once by backend/fargate_client.py
@@ -57,7 +63,55 @@ def rewrite_local_paths(job, local_dir):
             n["customVideoPath"] = str(local_dir / "custom-media" / Path(n["customVideoPath"]).name)
 
 
+def main_ingest():
+    job_id = os.environ["JOB_ID"]
+    bucket = os.environ["S3_BUCKET"]
+    source_key = os.environ["SOURCE_KEY"]
+    prefix = os.environ["S3_PREFIX"].rstrip("/")  # e.g. "jobs/<job_id>/ingest"
+
+    work = Path("/tmp/ingest") / job_id
+    out_dir = work / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    s3 = boto3.client("s3")
+    try:
+        source = work / "recording.mp4"
+        print(f"downloading s3://{bucket}/{source_key}")
+        s3.download_file(bucket, source_key, str(source))
+        result = ingest.run(str(source), str(out_dir))
+
+        # Paths in ingest.json become keys relative to the prefix; the
+        # worker makes them absolute again wherever it downloads to.
+        uploads = []
+        for seg in result["segments"]:
+            for k in ("framePath", "previewPath"):
+                if seg.get(k):
+                    rel = f"slides/{Path(seg[k]).name}"
+                    uploads.append((seg[k], rel))
+                    seg[k] = rel
+        for part in result["audio"]:
+            rel = Path(part["path"]).name
+            uploads.append((part["path"], rel))
+            part["path"] = rel
+        for local_path, rel in uploads:
+            s3.upload_file(local_path, bucket, f"{prefix}/{rel}")
+        result["sourceKey"] = source_key
+        result["sourceDeleted"] = True
+        s3.put_object(Bucket=bucket, Key=f"{prefix}/ingest.json", Body=json.dumps(result))
+        s3.delete_object(Bucket=bucket, Key=source_key)
+        kinds = {}
+        for seg in result["segments"]:
+            kinds[seg["kind"]] = kinds.get(seg["kind"], 0) + 1
+        print(f"Ingested {result['video']['durationSeconds'] / 60:.1f} min: {kinds}, {len(result['audio'])} audio part(s), "
+              f"{len(uploads)} files uploaded to s3://{bucket}/{prefix}/; deleted the upload")
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)
+
+
 def main():
+    if os.environ.get("MODE", "render") == "ingest":
+        main_ingest()
+        return
     job_id = os.environ["JOB_ID"]
     bucket = os.environ["S3_BUCKET"]
     prefix = os.environ["S3_PREFIX"].rstrip("/")  # e.g. "jobs/<job_id>"

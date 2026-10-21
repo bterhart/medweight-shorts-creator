@@ -24,6 +24,7 @@ import config
 import db
 import fargate_client
 import pipeline
+import recording
 
 
 def now_iso():
@@ -77,13 +78,107 @@ def _outline(job: dict) -> None:
         print(f"warning: outline_subtopics failed - the job is still usable: {job['subtopicsError']}")
 
 
+def run_recording_prepare(job: dict) -> None:
+    """Recording mode's prepare, multi-tick like rendering because the heavy
+    step runs on Fargate: tick 1 dispatches the ingest task; later ticks
+    poll it (step 'ingesting'); the tick that finds it finished fetches its
+    outputs and runs the rest here - transcript (Zoom VTT or speech-to-
+    text), trim, time-based alignment, then the shared cleaning and
+    outlining - to the same ready_for_review shape as the other modes.
+    Step 'realigning' re-enters after the review screen changes the trim:
+    alignment and cleaning again from the stored cues, no new ingest or
+    transcription."""
+    job_dir = os.path.join(config.DATA_DIR, "jobs", job["jobId"])
+    rec = job["sources"]["recording"]
+    step = job.get("step")
+
+    try:
+        if step in ("saving_inputs", "queued", None):
+            with timed("dispatch_ingest (ECS run_task)"):
+                task_arn = fargate_client.dispatch_ingest(job)
+            rec["ingest"] = {"taskArn": task_arn, "dispatchedAt": now_iso()}
+            job["step"] = "ingesting"
+            db.save_job(job)
+            return
+
+        if step == "ingesting":
+            status = fargate_client.check_task(rec["ingest"]["taskArn"])
+            if status["state"] == "running":
+                dispatched_at = datetime.fromisoformat(rec["ingest"]["dispatchedAt"])
+                elapsed = (datetime.now(timezone.utc) - dispatched_at).total_seconds()
+                rec["ingest"]["elapsedSeconds"] = round(elapsed)
+                db.save_job(job)
+                if elapsed > config.INGEST_TIMEOUT_MINUTES * 60:
+                    fail_job(job, "ingesting", "Fargate ingest task timed out",
+                             f"task {rec['ingest']['taskArn']} still running after {config.INGEST_TIMEOUT_MINUTES} minutes")
+                return
+            if status["state"] != "succeeded":
+                fail_job(job, "ingesting", "Fargate ingest task failed", status.get("detail", ""))
+                return
+            rec["ingest"]["finishedAt"] = now_iso()
+            job["step"] = "fetching_ingest"
+            db.save_job(job)
+            with timed("fetch_ingest_outputs"):
+                result = fargate_client.fetch_ingest_outputs(job, os.path.join(job_dir, "ingest"))
+            rec.update({
+                "video": result["video"],
+                "thumbnailBox": result["thumbnailBox"],
+                "thumbnailBoxSource": result.get("thumbnailBoxSource"),
+                "timeline": result["segments"],
+                "audio": result["audio"],
+                "audioStartSeconds": result["audioStartSeconds"],
+                "sourceDeleted": bool(result.get("sourceDeleted")),
+                "detectionThresholds": result.get("thresholds"),
+            })
+            job["slides"] = recording.slides_from_timeline(job)
+            db.save_job(job)
+
+            job["step"] = "transcribing"
+            db.save_job(job)
+            with timed("recording_cues"):
+                cues = recording.recording_cues(job)
+            db.save_job(job)
+
+            job["step"] = "trimming"
+            db.save_job(job)
+            with timed("trim_recording"):
+                recording.trim_recording(job, cues)
+            db.save_job(job)
+        elif step == "realigning":
+            cues = pipeline.parse_srt_cues(job["sources"]["srt"]["path"])
+        else:
+            raise RuntimeError(f"recording prepare does not know step {step!r}")
+
+        job["step"] = "aligning"
+        db.save_job(job)
+        with timed("align_recording"):
+            recording.align_recording(job, cues)
+        db.save_job(job)
+
+        job["step"] = "cleaning_narration"
+        db.save_job(job)
+        with timed(f"clean_narration ({len(job['alignment'])} segments)"):
+            pipeline.clean_narration(job)
+        db.save_job(job)
+        _outline(job)
+        job["phase"] = "ready_for_review"
+        job["step"] = "ready_for_review"
+        db.save_job(job)
+    except Exception as e:
+        fail_job(job, job.get("step", "unknown"), f"{type(e).__name__}: {e}", traceback.format_exc())
+
+
 def run_prepare_pipeline(job: dict) -> None:
-    """Two intake modes share the slide extraction and diverge after it.
-    'transcript' (the original): parse the SRT, align it to the slides with
-    Claude, clean the excerpts. 'notes': the PDF is the export of a PPTX
-    whose speaker notes are the narration - no transcript, so nothing to
-    align or clean; the notes are paired to pages by position and written
-    verbatim. Both end at the same ready_for_review shape."""
+    """Three intake modes. 'transcript' (the original): parse the SRT,
+    extract the PDF's slides, align with Claude, clean the excerpts.
+    'notes': the PDF is the export of a PPTX whose speaker notes are the
+    narration - no transcript, so nothing to align or clean; the notes are
+    paired to pages by position and written verbatim. 'recording': a Zoom
+    recording, handled by run_recording_prepare. All end at the same
+    ready_for_review shape."""
+    if job.get("inputMode") == "recording":
+        run_recording_prepare(job)
+        return
     job_dir = os.path.join(config.DATA_DIR, "jobs", job["jobId"])
     notes_mode = job.get("inputMode") == "notes"
 

@@ -39,6 +39,28 @@
         <div class="field-row">
           <label class="checkbox-field"><input type="radio" name="input-mode" value="transcript" checked /><span>Transcript (.srt) + slide PDF</span></label>
           <label class="checkbox-field"><input type="radio" name="input-mode" value="notes" /><span>PPTX with speaker notes + its PDF export</span></label>
+          <label class="checkbox-field"><input type="radio" name="input-mode" value="recording" /><span>Zoom recording (.mp4)</span></label>
+        </div>
+      </div>
+
+      <div id="recording-group" class="field-group" hidden>
+        <label>Zoom recording (.mp4)</label>
+        <div id="recording-dropzone" class="dropzone">
+          <span class="dropzone-hint">Drag &amp; drop the recording here, or click to browse</span>
+          <input id="recording-input" type="file" accept=".mp4,video/mp4" hidden />
+        </div>
+        <div id="recording-filename" class="file-chip" hidden></div>
+        <p class="hint">The shared-screen recording with the speaker thumbnail (1080p). It uploads straight to the render bucket when you start - a 500 MB file takes a few minutes - and is deleted from there once its slides, audio and timeline have been extracted. Waiting-room card, camera-only stretches and the host's setup are detected and trimmed; you can move the start and end afterwards.</p>
+        <label>Zoom transcript (.vtt, optional)</label>
+        <div id="vtt-dropzone" class="dropzone">
+          <span class="dropzone-hint">Drag &amp; drop Zoom's .vtt transcript here, or click to browse</span>
+          <input id="vtt-input" type="file" accept=".vtt,text/vtt" hidden />
+        </div>
+        <div id="vtt-filename" class="file-chip" hidden></div>
+        <p class="hint">With Zoom's transcript the recording is not sent to speech-to-text. Without it, the soundtrack from a minute before the talk is transcribed with ElevenLabs.</p>
+        <div id="upload-progress" class="upload-progress" hidden>
+          <div class="upload-bar"><div id="upload-bar-fill" class="upload-bar-fill"></div></div>
+          <span id="upload-progress-text" class="hint"></span>
         </div>
       </div>
 
@@ -61,7 +83,7 @@
         <p class="hint">Each slide's speaker notes become its narration, word for word. A video embedded on a slide plays there after the narration (or on its own), with its own sound. Slides with neither notes nor a video are left out.</p>
       </div>
 
-      <div class="field-group">
+      <div id="pdf-group" class="field-group">
         <label id="pdf-label">Slide deck PDF(s)</label>
         <div id="pdf-dropzone" class="dropzone">
           <span id="pdf-dropzone-hint" class="dropzone-hint">Drag &amp; drop one or more PDFs here, or click to browse</span>
@@ -74,6 +96,7 @@
 
       <p id="prepare-hint-transcript" class="hint">Alignment runs against the full transcript and full slide deck, then this step cleans each slide's text (removing filler and personal references) - no target narration length to pick here. Shortening to a target duration is a separate, later step.</p>
       <p id="prepare-hint-notes" class="hint" hidden>No alignment or cleaning in this mode - the notes are used as written, so preparing takes seconds and costs nothing. The narration style below is not applied to them; its saved prompts are still what shorts are written with.</p>
+      <p id="prepare-hint-recording" class="hint" hidden>Preparing takes a while: decoding a two-hour recording on the render task is about half an hour, then transcription, trimming, time-based alignment (each slide takes what was said while it was on screen) and the same cleaning as transcript mode.</p>
 
       <div class="field-group">
         <label for="narration-style">Narration style / expertise</label>
@@ -124,6 +147,21 @@
       <h2>3. Review script &amp; slides</h2>
       <p class="hint">This is the full 1:1 slide-to-narration alignment — permanent for this job, never shortened or rewritten in place. Create as many shorts as you like from it below.</p>
       <p id="review-notes-info" class="hint" hidden></p>
+      <div id="review-recording-info" class="recording-info" hidden>
+        <p id="review-recording-summary" class="hint"></p>
+        <div class="field-row">
+          <label class="inline-number">Presentation starts at
+            <input id="trim-start" type="text" placeholder="h:mm:ss" />
+          </label>
+          <label class="inline-number">and ends at
+            <input id="trim-end" type="text" placeholder="h:mm:ss" />
+          </label>
+          <button id="trim-apply-btn" class="secondary-btn" type="button">Re-align from this span</button>
+        </div>
+        <p id="trim-reason" class="hint"></p>
+        <p class="hint">Re-aligning rebuilds the narration below from the stored transcript (no new upload or transcription). Shorts already created keep their scripts.</p>
+        <p id="trim-error" class="error-text" hidden></p>
+      </div>
       <p id="review-title" class="review-title" hidden></p>
       <button id="back-btn" class="secondary-btn" type="button">&larr; Back to setup</button>
       <p class="hint">Going back starts a new submission — this won't resume or reuse the job you just prepared.</p>

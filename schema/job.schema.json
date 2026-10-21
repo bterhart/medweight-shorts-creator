@@ -17,9 +17,9 @@
     },
     "inputMode": {
       "type": "string",
-      "enum": ["transcript", "notes"],
+      "enum": ["transcript", "notes", "recording"],
       "default": "transcript",
-      "description": "'transcript': an .srt aligned to the slide PDF by Claude, then cleaned (the original flow). 'notes': a PPTX whose speaker notes are the narration, plus the PDF export of that same deck for the images; prepare pairs visible slide i with page i and writes narration verbatim - no alignment, no cleaning, no Claude call. Absent on jobs created before the mode existed, which are 'transcript'."
+      "description": "'transcript': an .srt aligned to the slide PDF by Claude, then cleaned (the original flow). 'notes': a PPTX whose speaker notes are the narration, plus the PDF export of that same deck for the images; prepare pairs visible slide i with page i and writes narration verbatim - no alignment, no cleaning, no Claude call. 'recording': a Zoom recording of the presentation (sources.recording): a Fargate ingest task finds the slides in the video and pulls their frames and the audio; the transcript is the uploaded Zoom WebVTT or ElevenLabs speech-to-text; one Claude call trims the recording to the talk; alignment is by time (each slide takes what was said while it was on screen), then cleaning and outlining as in transcript mode. Absent on jobs created before the mode existed, which are 'transcript'."
     },
     "activeShortId": {
       "type": ["string", "null"],
@@ -34,6 +34,11 @@
         "parsing_srt",
         "extracting_pdfs",
         "extracting_notes",
+        "ingesting",
+        "fetching_ingest",
+        "transcribing",
+        "trimming",
+        "realigning",
         "aligning",
         "outlining",
         "cleaning_narration",
@@ -91,7 +96,7 @@
       "properties": {
         "srt": {
           "type": ["object", "null"],
-          "description": "null in notes mode.",
+          "description": "null in notes mode. In recording mode, filled during 'transcribing' with the SRT written from the Zoom VTT or speech-to-text (path under the job's input dir), so the rest of the app sees a transcript.",
           "properties": {
             "filename": { "type": "string" },
             "path": { "type": "string" },
@@ -113,9 +118,48 @@
             "slidesWithoutNotes": { "type": "array", "items": { "type": "string" }, "description": "slideIds of visible slides with empty notes and no video - left out of job.narration, so no short can pick them." }
           }
         },
+        "recording": {
+          "type": ["object", "null"],
+          "description": "Recording mode only (null otherwise). Set at creation (filename, s3Key, sizeBytes, vtt), extended by the worker as ingest, transcription and trim complete.",
+          "properties": {
+            "filename": { "type": "string" },
+            "s3Key": { "type": "string", "description": "Where the browser's direct-to-S3 upload landed (uploads/<id>/<name>.mp4). The ingest task deletes it after a successful ingest (sourceDeleted)." },
+            "sizeBytes": { "type": "integer" },
+            "vtt": { "type": ["object", "null"], "description": "The Zoom WebVTT transcript if one was uploaded; otherwise speech-to-text runs over the audio parts.", "properties": { "filename": { "type": "string" }, "path": { "type": "string" } } },
+            "ingest": { "type": "object", "properties": { "taskArn": { "type": "string" }, "dispatchedAt": { "type": "string" }, "finishedAt": { "type": "string" }, "elapsedSeconds": { "type": "integer" } } },
+            "video": { "type": "object", "properties": { "width": { "type": "integer" }, "height": { "type": "integer" }, "fps": { "type": "number" }, "durationSeconds": { "type": "number" } } },
+            "thumbnailBox": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4, "description": "[left, top, width, height] of the speaker thumbnail as fractions of the frame, filled in from the surrounding background on every slide frame." },
+            "thumbnailBoxSource": { "type": "string", "enum": ["detected", "default", "given"] },
+            "timeline": {
+              "type": "array",
+              "description": "render/ingest.py's segments in time order: what was on screen when. Slide segments carry the frame files (under data/jobs/<id>/ingest/slides/) that became job.slides entries 'rec-s<index>'.",
+              "items": { "type": "object", "properties": {
+                "index": { "type": "integer" },
+                "kind": { "type": "string", "enum": ["slide", "camera", "placeholder"] },
+                "startSeconds": { "type": "number" }, "endSeconds": { "type": "number" },
+                "frameAt": { "type": "number" }, "framePath": { "type": "string" }, "previewPath": { "type": "string" }
+              } }
+            },
+            "audio": { "type": "array", "items": { "type": "object", "properties": { "path": { "type": "string" }, "offsetSeconds": { "type": "number" }, "durationSeconds": { "type": "number" } } }, "description": "Mono MP3 parts of the soundtrack from audioStartSeconds on, each up to 20 min, what speech-to-text was run on." },
+            "audioStartSeconds": { "type": "number" },
+            "sourceDeleted": { "type": "boolean" },
+            "transcriptSource": { "type": "string", "enum": ["zoom-vtt", "elevenlabs-stt"] },
+            "trim": {
+              "type": "object",
+              "description": "The span of the recording that is the presentation. Alignment covers only slide segments inside it and not in excludedSegments. PATCH /jobs/<id>/trim replaces it and re-runs alignment + cleaning.",
+              "properties": {
+                "startSeconds": { "type": "number" }, "endSeconds": { "type": "number" },
+                "excludedSegments": { "type": "array", "items": { "type": "integer" }, "description": "timeline[].index values inside the span to leave out (a break, an interruption)." },
+                "reason": { "type": "string" },
+                "source": { "type": "string", "enum": ["claude", "default", "manual"] }
+              }
+            },
+            "detectionThresholds": { "type": "object" }
+          }
+        },
         "pdfs": {
           "type": "array",
-          "description": "Exactly one entry must have role='primary' (notes mode: exactly one PDF, the deck's export). UI enforces this with a radio control; a single uploaded PDF is auto-assigned primary.",
+          "description": "Exactly one entry must have role='primary' (notes mode: exactly one PDF, the deck's export; recording mode: empty). UI enforces this with a radio control; a single uploaded PDF is auto-assigned primary.",
           "items": {
             "type": "object",
             "required": ["id", "filename", "path", "role", "order"],
@@ -134,7 +178,7 @@
 
     "slides": {
       "type": "array",
-      "description": "Flattened, ordered-by-extraction list of every page across every PDF (pre-alignment). Populated during 'extracting_pdfs'.",
+      "description": "Flattened, ordered-by-extraction list of every page across every PDF (pre-alignment). Populated during 'extracting_pdfs'. Recording mode: one entry per detected slide segment instead ('rec-s<index>', pdfId 'recording', pageNumber counting up), populated during 'fetching_ingest', whatever the trim.",
       "items": {
         "type": "object",
         "required": ["slideId", "pdfId", "pageNumber", "imagePath"],
@@ -144,7 +188,12 @@
           "pageNumber": { "type": "integer" },
           "imagePath": { "type": "string", "description": "Full-resolution rendition: the page rasterised so its long edge is SLIDE_IMAGE_LONG_EDGE_PX (3840 by default). What the render uses; only the slides a short's script references are ever uploaded to S3." },
           "previewImagePath": { "type": "string", "description": "Small rendition (long edge SLIDE_PREVIEW_LONG_EDGE_PX, 1280 by default) the review UI loads instead of imagePath. Absent on jobs prepared before it existed - the UI falls back to imagePath." },
-          "textPath": { "type": "string", "description": "Extracted page text, given to the alignment model alongside the image itself." },
+          "textPath": { "type": ["string", "null"], "description": "Extracted page text, given to the alignment model alongside the image itself. null for a recording's frames." },
+          "recordingSegment": {
+            "type": "object",
+            "description": "Recording mode only: which timeline segment this frame came from and when it was on screen.",
+            "properties": { "index": { "type": "integer" }, "startSeconds": { "type": "number" }, "endSeconds": { "type": "number" } }
+          },
           "video": {
             "type": "object",
             "description": "Notes mode only: the first video embedded on this slide in the PPTX (the PDF export carries nothing of it but a blank), written to data/jobs/<id>/media/. The render composites it over the slide image at `box` after the segment's narration (or alone on a video-only slide, whose narration script is empty), played once, its own sound mixed in, last frame held if narration + clip is shorter than minSlideSeconds. Dropped if the segment's image is swapped post-review.",

@@ -1,7 +1,9 @@
-"""Fargate-based rendering: offloads video encoding off the CPU-throttled
-cPanel host onto a short-lived ECS Fargate task. worker.py dispatches a task
-(uploading the job's assets to S3 first) then polls for completion on later
-cron ticks - see run_render() in worker.py.
+"""Fargate-based rendering and recording ingest: offloads video encoding
+(and, for recording-mode jobs, decoding a Zoom recording into slides -
+render/ingest.py) off the CPU-throttled cPanel host onto a short-lived ECS
+Fargate task. worker.py dispatches a task (uploading the job's assets to S3
+first) then polls for completion on later cron ticks - see run_render() and
+run_recording_prepare() in worker.py.
 
 AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY are read directly by boto3 from the
 environment (set via .env like everything else in config.py) - not
@@ -10,8 +12,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import uuid
+from pathlib import Path
 
 import boto3
+from botocore.exceptions import ClientError
 
 import config
 
@@ -51,6 +57,116 @@ def _ecs():
 
 def _prefix(job_id: str, short_id: str) -> str:
     return f"jobs/{job_id}/shorts/{short_id}"
+
+
+def _ingest_prefix(job_id: str) -> str:
+    return f"jobs/{job_id}/ingest"
+
+
+def _run_task(environment: dict) -> str:
+    """Launches the render image once with these container environment
+    variables (MODE picks what render/ecs_task.py does) and returns the
+    task ARN."""
+    resp = _ecs().run_task(
+        cluster=config.RENDER_ECS_CLUSTER,
+        taskDefinition=config.RENDER_ECS_TASK_DEFINITION,
+        launchType="FARGATE",
+        networkConfiguration={
+            "awsvpcConfiguration": {
+                "subnets": config.RENDER_ECS_SUBNETS,
+                "securityGroups": config.RENDER_ECS_SECURITY_GROUPS,
+                "assignPublicIp": "ENABLED",
+            }
+        },
+        overrides={"containerOverrides": [{
+            "name": "render",
+            "environment": [{"name": k, "value": str(v)} for k, v in environment.items()],
+        }]},
+    )
+    if resp.get("failures"):
+        f = resp["failures"][0]
+        raise RuntimeError(f"ECS run_task failed: {f.get('reason')}: {f.get('detail', '')}")
+    return resp["tasks"][0]["taskArn"]
+
+
+# ------------------------------------------------------ recording ingest ----
+
+UPLOAD_URL_EXPIRES_SECONDS = 3600
+RECORDING_CONTENT_TYPE = "video/mp4"
+
+
+def presigned_recording_upload(filename: str) -> dict:
+    """A one-hour presigned PUT the browser uploads the recording with -
+    directly to S3, never through the cPanel host (a session recording is
+    hundreds of MB). The key sits under uploads/<id>/ because the job that
+    will own it does not exist yet; the ingest task deletes the object
+    once it has what it needs. Needs the bucket's CORS to allow PUT from
+    the UI's origin (docs/deployment.md)."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(filename or "recording.mp4")).strip("-") or "recording.mp4"
+    key = f"uploads/{uuid.uuid4()}/{safe}"
+    url = _s3().generate_presigned_url(
+        "put_object",
+        Params={"Bucket": config.RENDER_S3_BUCKET, "Key": key, "ContentType": RECORDING_CONTENT_TYPE},
+        ExpiresIn=UPLOAD_URL_EXPIRES_SECONDS,
+    )
+    return {"key": key, "url": url, "contentType": RECORDING_CONTENT_TYPE, "expiresIn": UPLOAD_URL_EXPIRES_SECONDS}
+
+
+def uploaded_object_size(key: str) -> int | None:
+    """Bytes at this key, or None if there is no such object - checked at
+    job creation so a job is never queued for a recording that never
+    arrived."""
+    try:
+        return int(_s3().head_object(Bucket=config.RENDER_S3_BUCKET, Key=key)["ContentLength"])
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+            return None
+        raise
+
+
+def dispatch_ingest(job: dict) -> str:
+    """Starts the ingest task for a recording-mode job: it reads the
+    uploaded recording, writes slides/audio/timeline under the job's ingest
+    prefix and deletes the upload. Returns the task ARN."""
+    job_id = job["jobId"]
+    return _run_task({
+        "MODE": "ingest",
+        "JOB_ID": job_id,
+        "S3_BUCKET": config.RENDER_S3_BUCKET,
+        "SOURCE_KEY": job["sources"]["recording"]["s3Key"],
+        "S3_PREFIX": _ingest_prefix(job_id),
+    })
+
+
+def fetch_ingest_outputs(job: dict, local_dir: str) -> dict:
+    """Downloads everything the ingest task wrote (ingest.json, slide
+    frames + previews, audio parts) into local_dir and returns ingest.json
+    with its relative paths made absolute under local_dir."""
+    s3 = _s3()
+    prefix = _ingest_prefix(job["jobId"])
+    local = Path(local_dir)
+    paginator = s3.get_paginator("list_objects_v2")
+    count = 0
+    for page in paginator.paginate(Bucket=config.RENDER_S3_BUCKET, Prefix=prefix + "/"):
+        for obj in page.get("Contents", []):
+            rel = obj["Key"][len(prefix):].lstrip("/")
+            if not rel:
+                continue
+            dest = local / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            s3.download_file(config.RENDER_S3_BUCKET, obj["Key"], str(dest))
+            count += 1
+    manifest = local / "ingest.json"
+    if not manifest.is_file():
+        raise RuntimeError(f"the ingest task left no ingest.json under s3://{config.RENDER_S3_BUCKET}/{prefix}/ ({count} objects)")
+    result = json.loads(manifest.read_text())
+    for seg in result.get("segments", []):
+        for k in ("framePath", "previewPath"):
+            if seg.get(k):
+                seg[k] = str(local / seg[k])
+    for part in result.get("audio", []):
+        part["path"] = str(local / part["path"])
+    return result
 
 
 def dispatch_render(job: dict, short: dict, render_count: int) -> str:
@@ -116,34 +232,13 @@ def dispatch_render(job: dict, short: dict, render_count: int) -> str:
     if overrides.get("includeOutro"):
         _upload_shared_asset(s3, "outro.mp4", OUTRO_ASSET_KEY)
 
-    ecs = _ecs()
-    resp = ecs.run_task(
-        cluster=config.RENDER_ECS_CLUSTER,
-        taskDefinition=config.RENDER_ECS_TASK_DEFINITION,
-        launchType="FARGATE",
-        networkConfiguration={
-            "awsvpcConfiguration": {
-                "subnets": config.RENDER_ECS_SUBNETS,
-                "securityGroups": config.RENDER_ECS_SECURITY_GROUPS,
-                "assignPublicIp": "ENABLED",
-            }
-        },
-        overrides={
-            "containerOverrides": [{
-                "name": "render",
-                "environment": [
-                    {"name": "JOB_ID", "value": job_id},
-                    {"name": "S3_BUCKET", "value": config.RENDER_S3_BUCKET},
-                    {"name": "S3_PREFIX", "value": prefix},
-                    {"name": "RENDER_COUNT", "value": str(render_count)},
-                ],
-            }]
-        },
-    )
-    if resp.get("failures"):
-        f = resp["failures"][0]
-        raise RuntimeError(f"ECS run_task failed: {f.get('reason')}: {f.get('detail', '')}")
-    return resp["tasks"][0]["taskArn"]
+    return _run_task({
+        "MODE": "render",
+        "JOB_ID": job_id,
+        "S3_BUCKET": config.RENDER_S3_BUCKET,
+        "S3_PREFIX": prefix,
+        "RENDER_COUNT": render_count,
+    })
 
 
 def check_task(task_arn: str) -> dict:

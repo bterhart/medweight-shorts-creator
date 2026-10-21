@@ -1,5 +1,7 @@
 // Chatbot Shorts UI — talks to backend/app.py:
+//   POST {apiBase}/uploads/recording                     presigned S3 PUT for a Zoom recording (recording mode)
 //   POST {apiBase}/jobs                                  create a job
+//   PATCH {apiBase}/jobs/:jobId/trim                      move a recording's presentation start/end (re-aligns)
 //   GET  {apiBase}/jobs/:jobId/status                    poll job status
 //   POST {apiBase}/jobs/:jobId/shorts                    create a short from the job's permanent narration
 //   POST {apiBase}/jobs/:jobId/shorts/:shortId/render    trigger that short's render
@@ -11,7 +13,9 @@
 
 // Prepare steps per intake mode (job.inputMode). Notes mode has no
 // transcript, so nothing to align or clean - the speaker notes are read
-// straight into the narration.
+// straight into the narration. Recording mode's slides and audio come out
+// of a Fargate ingest task (minutes to tens of minutes), then its
+// transcript is the Zoom VTT or speech-to-text.
 const STEP_ORDERS = {
   transcript: [
     ["queued", "Queued"],
@@ -28,6 +32,19 @@ const STEP_ORDERS = {
     ["saving_inputs", "Saving uploaded files"],
     ["extracting_pdfs", "Extracting slide images"],
     ["extracting_notes", "Reading speaker notes"],
+    ["outlining", "Finding sub-topics"],
+    ["ready_for_review", "Ready for review"],
+  ],
+  recording: [
+    ["queued", "Queued"],
+    ["saving_inputs", "Saving uploaded files"],
+    ["ingesting", "Finding slides in the recording (Fargate)"],
+    ["fetching_ingest", "Fetching slide frames and audio"],
+    ["transcribing", "Transcribing"],
+    ["trimming", "Trimming to the presentation"],
+    ["realigning", "Re-aligning from the new span"],
+    ["aligning", "Aligning speech to slides"],
+    ["cleaning_narration", "Cleaning narration text"],
     ["outlining", "Finding sub-topics"],
     ["ready_for_review", "Ready for review"],
   ],
@@ -170,9 +187,13 @@ function inputMode() {
 }
 
 function applyInputMode() {
-  const notes = inputMode() === "notes";
-  $("srt-group").hidden = notes;
+  const mode = inputMode();
+  const notes = mode === "notes";
+  const recording = mode === "recording";
+  $("srt-group").hidden = mode !== "transcript";
   $("pptx-group").hidden = !notes;
+  $("recording-group").hidden = !recording;
+  $("pdf-group").hidden = recording; // the slides come out of the video
   $("pdf-label").textContent = notes ? "PDF export of that deck" : "Slide deck PDF(s)";
   $("pdf-dropzone-hint").textContent = notes
     ? "Drag & drop the deck's PDF export here, or click to browse"
@@ -180,8 +201,9 @@ function applyInputMode() {
   $("pdf-input").multiple = !notes;
   $("pdf-hint-transcript").hidden = notes;
   $("pdf-hint-notes").hidden = !notes;
-  $("prepare-hint-transcript").hidden = notes;
+  $("prepare-hint-transcript").hidden = mode !== "transcript";
   $("prepare-hint-notes").hidden = !notes;
+  $("prepare-hint-recording").hidden = !recording;
   validateSetup();
 }
 
@@ -205,6 +227,23 @@ setupDropzone($("pptx-dropzone"), $("pptx-input"), (files) => {
   $("pptx-filename").textContent = pptxFile.name;
   $("pptx-filename").hidden = false;
   validateSetup();
+});
+
+// ---------- recording + VTT dropzones (recording mode) ----------
+let recordingFile = null;
+let vttFile = null;
+setupDropzone($("recording-dropzone"), $("recording-input"), (files) => {
+  if (!files.length) return;
+  recordingFile = files[0];
+  $("recording-filename").textContent = `${recordingFile.name} (${(recordingFile.size / 1048576).toFixed(0)} MB)`;
+  $("recording-filename").hidden = false;
+  validateSetup();
+});
+setupDropzone($("vtt-dropzone"), $("vtt-input"), (files) => {
+  if (!files.length) return;
+  vttFile = files[0];
+  $("vtt-filename").textContent = vttFile.name;
+  $("vtt-filename").hidden = false;
 });
 
 // ---------- PDF dropzone ----------
@@ -289,10 +328,43 @@ $("short-voice-preset").addEventListener("change", () => {
 function validateSetup() {
   // apiBase may legitimately be empty (UI served from the same origin as the webhooks)
   const hasPrimary = state.pdfs.some((p) => p.role === "primary");
-  const ok = inputMode() === "notes"
+  const mode = inputMode();
+  const ok = mode === "notes"
     ? Boolean(pptxFile && state.pdfs.length === 1 && hasPrimary)   // one deck: notes pair to pages by position
-    : Boolean(srtFile && state.pdfs.length > 0 && hasPrimary);
+    : mode === "recording"
+      ? Boolean(recordingFile)                                       // no PDF: the slides come out of the video
+      : Boolean(srtFile && state.pdfs.length > 0 && hasPrimary);
   $("submit-btn").disabled = !ok;
+}
+
+// Recording mode: the video goes straight to S3 with a presigned PUT (the
+// cPanel host never sees it), then the job is created with the key.
+// Resolves to {key, filename}.
+async function uploadRecording(file) {
+  const res = await fetch(`${getApiBase()}/uploads/recording`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: file.name, sizeBytes: file.size }),
+  });
+  if (!res.ok) throw new Error(`could not get an upload URL (server responded ${res.status})`);
+  const target = await res.json();
+  $("upload-progress").hidden = false;
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", target.url);
+    xhr.setRequestHeader("Content-Type", target.contentType);
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const pct = Math.round((e.loaded / e.total) * 100);
+      $("upload-bar-fill").style.width = `${pct}%`;
+      $("upload-progress-text").textContent = `Uploading ${(e.loaded / 1048576).toFixed(0)} of ${(e.total / 1048576).toFixed(0)} MB (${pct}%)`;
+    };
+    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300)
+      ? resolve()
+      : reject(new Error(`S3 rejected the upload (HTTP ${xhr.status}) - check the bucket's CORS rule for this origin`));
+    xhr.onerror = () => reject(new Error("the upload to S3 failed before completing - check the bucket's CORS rule for this origin and your connection"));
+    xhr.send(file);
+  });
+  $("upload-progress-text").textContent = "Upload complete.";
+  return { key: target.key, filename: file.name };
 }
 
 // ---------- submit (Phase 1) ----------
@@ -309,19 +381,25 @@ $("submit-btn").addEventListener("click", async () => {
       transitionSeconds: Number($("transition-seconds").value),
       minSlideSeconds: Number($("min-slide-seconds").value),
     },
-    srtFilename: mode === "notes" ? null : srtFile.name,
-    pdfs: state.pdfs.map((p, i) => ({ filename: p.filename, role: p.role, order: i, binaryKey: `pdf_${i}` })),
+    srtFilename: mode === "transcript" ? srtFile.name : null,
+    pdfs: mode === "recording" ? [] : state.pdfs.map((p, i) => ({ filename: p.filename, role: p.role, order: i, binaryKey: `pdf_${i}` })),
   };
 
-  const form = new FormData();
-  form.append("params", JSON.stringify(params));
-  if (mode === "notes") form.append("pptx", pptxFile, pptxFile.name);
-  else form.append("srt", srtFile, srtFile.name);
-  state.pdfs.forEach((p, i) => form.append(`pdf_${i}`, p.file, p.filename));
-
   $("submit-btn").disabled = true;
-  $("submit-btn").textContent = "Submitting…";
+  $("submit-btn").textContent = mode === "recording" ? "Uploading…" : "Submitting…";
   try {
+    const form = new FormData();
+    if (mode === "recording") {
+      params.recording = await uploadRecording(recordingFile);
+      if (vttFile) form.append("vtt", vttFile, vttFile.name);
+      $("submit-btn").textContent = "Submitting…";
+    } else if (mode === "notes") {
+      form.append("pptx", pptxFile, pptxFile.name);
+    } else {
+      form.append("srt", srtFile, srtFile.name);
+    }
+    form.append("params", JSON.stringify(params));
+    if (mode !== "recording") state.pdfs.forEach((p, i) => form.append(`pdf_${i}`, p.file, p.filename));
     const res = await fetch(`${getApiBase()}/jobs`, { method: "POST", body: form });
     if (!res.ok) throw new Error(`Server responded ${res.status}`);
     const data = await res.json();
@@ -336,13 +414,18 @@ $("submit-btn").addEventListener("click", async () => {
     showError($("setup-error"), `Failed to start job: ${err.message}`);
     $("submit-btn").disabled = false;
     $("submit-btn").textContent = "Start preparing";
+    $("upload-progress").hidden = true;
   }
 });
 
 function renderStepList(currentStep, mode) {
   const list = $("step-list");
   list.innerHTML = "";
-  const steps = STEP_ORDERS[mode] || STEP_ORDERS.transcript;
+  // Recording mode's 'realigning' (a trim change from the review screen)
+  // replaces the ingest/transcribe/trim steps rather than following them.
+  const steps = (STEP_ORDERS[mode] || STEP_ORDERS.transcript).filter(([key]) => currentStep === "realigning"
+    ? !["ingesting", "fetching_ingest", "transcribing", "trimming"].includes(key)
+    : key !== "realigning");
   const currentIndex = steps.findIndex(([key]) => key === currentStep);
   steps.forEach(([key, label], i) => {
     const li = document.createElement("li");
@@ -402,6 +485,59 @@ async function pollStatus() {
   }
 }
 
+// ---------- recording mode: what the ingest found, and the trim ----------
+function clock(seconds) {
+  const s = Math.round(seconds);
+  return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function showRecordingInfo(job) {
+  const rec = job.inputMode === "recording" && job.sources && job.sources.recording;
+  $("review-recording-info").hidden = !rec;
+  if (!rec) return;
+  const timeline = rec.timeline || [];
+  const slideCount = timeline.filter((s) => s.kind === "slide").length;
+  const duration = rec.video ? rec.video.durationSeconds : (timeline.length ? timeline[timeline.length - 1].endSeconds : 0);
+  const srt = job.sources.srt || {};
+  const transcript = rec.transcriptSource === "zoom-vtt" ? `Zoom's transcript (${srt.filename})` : "ElevenLabs speech-to-text";
+  $("review-recording-summary").textContent =
+    `${rec.filename}: ${clock(duration)} long, ${slideCount} slides detected, ${job.narration.length} narrated inside the span. `
+    + `Transcript: ${transcript}, ${srt.cueCount || 0} cues.`
+    + (rec.sourceDeleted ? " The upload was deleted from the bucket after ingest." : "");
+  const trim = rec.trim || {};
+  $("trim-start").value = clock(trim.startSeconds || 0);
+  $("trim-end").value = clock(trim.endSeconds || duration);
+  const who = { claude: "Chosen by Claude from the transcript", default: "Default span", manual: "Set here" }[trim.source] || "Span";
+  $("trim-reason").textContent = `${who}: ${trim.reason || ""}`
+    + (trim.excludedSegments && trim.excludedSegments.length ? ` Excluded stretches: ${trim.excludedSegments.join(", ")}.` : "");
+  showError($("trim-error"), "");
+}
+
+$("trim-apply-btn").addEventListener("click", async () => {
+  if (!confirmDiscardUnsaved()) return;
+  showError($("trim-error"), "");
+  $("trim-apply-btn").disabled = true;
+  try {
+    const res = await fetch(`${getApiBase()}/jobs/${state.jobId}/trim`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ startSeconds: $("trim-start").value.trim(), endSeconds: $("trim-end").value.trim() }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
+    state.textFields = [];
+    releaseMediaElements();
+    $("review-section").hidden = true;
+    $("progress-section").hidden = false;
+    $("progress-job-id").textContent = state.jobId;
+    renderStepList(data.step, "recording");
+    startPolling("prepare");
+  } catch (err) {
+    showError($("trim-error"), `Could not re-align: ${err.message}`);
+  } finally {
+    $("trim-apply-btn").disabled = false;
+  }
+});
+
 // ---------- review (Phase 1 complete): permanent 1:1 narration ----------
 function showReview(job) {
   $("review-section").hidden = false;
@@ -416,6 +552,7 @@ function showReview(job) {
       + (pptx.hiddenCount ? `, ${pptx.hiddenCount} hidden slide${pptx.hiddenCount === 1 ? "" : "s"} skipped` : "")
       + (skipped.length ? `. Left out (no notes, no video): ${skipped.join(", ")}.` : ".");
   }
+  showRecordingInfo(job);
   $("review-title").hidden = !job.title;
   if (job.title) $("review-title").textContent = job.title;
   fillSubtopicPicker(job);
@@ -1168,11 +1305,20 @@ $("back-btn").addEventListener("click", () => {
   state.pdfs = [];
   srtFile = null;
   pptxFile = null;
+  recordingFile = null;
+  vttFile = null;
   $("srt-input").value = "";
   $("pptx-input").value = "";
+  $("recording-input").value = "";
+  $("vtt-input").value = "";
   $("pdf-input").value = "";
   $("srt-filename").hidden = true;
   $("pptx-filename").hidden = true;
+  $("recording-filename").hidden = true;
+  $("vtt-filename").hidden = true;
+  $("upload-progress").hidden = true;
+  $("upload-bar-fill").style.width = "0";
+  $("submit-btn").textContent = "Start preparing";
   renderPdfList();
   $("review-section").hidden = true;
   $("progress-section").hidden = true;

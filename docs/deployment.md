@@ -71,7 +71,8 @@ Fill in `.env`: DB credentials from step 4, plus `ELEVENLABS_API_KEY` / `ANTHROP
 (the Grok voices; use freshly rotated keys — never ones that have appeared in a chat transcript). The `ALIGNMENT_*` entries are
 optional and default sensibly (Opus 5, `high` effort, fallbacks on), as are `SLIDE_IMAGE_LONG_EDGE_PX` /
 `SLIDE_PREVIEW_LONG_EDGE_PX` (3840 / 1280 - see `.env.example`; a 74-slide deck at the default is a few hundred
-MB under `data/jobs/<id>/slides/`, so keep an eye on the account's disk quota). `.env` is gitignored; it never gets
+MB under `data/jobs/<id>/slides/`, so keep an eye on the account's disk quota) and `INGEST_TIMEOUT_MINUTES`
+(90: how long a recording-mode ingest task may run before the job fails). `.env` is gitignored; it never gets
 committed.
 
 ## 6. Restart the app and smoke-test it
@@ -144,14 +145,38 @@ committed). A render only uploads whichever of the two it actually requests to S
 (`backend/fargate_client.py`) for the Fargate task to fetch; leave a toggle off if its file isn't there yet,
 since requesting one that's missing fails that render with a clear "not present" error.
 
+## Recording mode: bucket CORS (one-time)
+
+In recording mode the browser PUTs the `.mp4` straight to the render bucket with a presigned URL from
+`POST /uploads/recording`, so the bucket must allow that cross-origin PUT from the UI's origin. S3 console →
+bucket `medweight-chatbot-shorts-amzs3` → Permissions → Cross-origin resource sharing (CORS) → Edit, paste:
+
+```json
+[
+  {
+    "AllowedHeaders": ["Content-Type"],
+    "AllowedMethods": ["PUT"],
+    "AllowedOrigins": ["https://www.medweight.ca", "https://medweight.ca"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3000
+  }
+]
+```
+
+Without it the upload fails in the browser with a CORS error before any job exists (the UI says so). No IAM
+change is needed: the cPanel user's existing `s3:PutObject` on the bucket signs the upload, its
+`s3:GetObject` fetches the ingest's outputs, and the ingest task deletes the upload with the task role's own
+S3 access. Uploads land under `uploads/<id>/` and are deleted after a successful ingest; a failed ingest
+leaves the file there to inspect or remove by hand.
+
 ## Rebuilding the Fargate render image
 
-`render/render.py` and `render/ecs_task.py` never run on the cPanel host - they run inside the Docker
-image the ECS task definition `chatbot-shorts-render` points at
+`render/render.py`, `render/ingest.py` and `render/ecs_task.py` never run on the cPanel host - they run
+inside the Docker image the ECS task definition `chatbot-shorts-render` points at
 (`377056770382.dkr.ecr.us-east-1.amazonaws.com/chatbot-shorts-render:latest`). **A `git pull` on cPanel
-does not update that image.** Whenever a commit touches `render/render.py`, `render/ecs_task.py`,
-`render/requirements.txt` or `render/Dockerfile`, rebuild and push it, or Fargate keeps rendering with the
-old code (learned the hard way: the intro/outro and custom-image features shipped on 23 Sept 2026 against an
+does not update that image.** Whenever a commit touches `render/render.py`, `render/ingest.py`,
+`render/ecs_task.py`, `render/requirements.txt` or `render/Dockerfile`, rebuild and push it, or Fargate
+keeps running the old code (learned the hard way: the intro/outro and custom-image features shipped on 23 Sept 2026 against an
 image built on 12 Sept, which silently ignored them and failed on added slides).
 
 Build in **AWS CloudShell** (region N. Virginia / us-east-1) - it has Docker and an already-signed-in AWS
@@ -160,12 +185,12 @@ CLI, and `~/medweight-shorts-creator` persists between CloudShell sessions. One 
 ```
 cd ~/medweight-shorts-creator && git pull && git log --oneline -1
 docker build -f render/Dockerfile -t chatbot-shorts-render:latest . 2>&1 | tail -5
-docker run --rm --entrypoint grep chatbot-shorts-render:latest -c "customImagePath\|intro" /app/render.py /app/ecs_task.py
+docker run --rm --entrypoint grep chatbot-shorts-render:latest -c "customImagePath\|intro\|main_ingest" /app/render.py /app/ecs_task.py /app/ingest.py
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 377056770382.dkr.ecr.us-east-1.amazonaws.com && docker tag chatbot-shorts-render:latest 377056770382.dkr.ecr.us-east-1.amazonaws.com/chatbot-shorts-render:latest && docker push 377056770382.dkr.ecr.us-east-1.amazonaws.com/chatbot-shorts-render:latest 2>&1 | tail -3
 ```
 
-The `grep` line is a sanity check that the freshly built image contains the code you expect (both counts
-above zero) before anything is pushed. The push ends with `latest: digest: sha256:...`. Nothing else
+The `grep` line is a sanity check that the freshly built image contains the code you expect (all three
+counts above zero) before anything is pushed. The push ends with `latest: digest: sha256:...`. Nothing else
 changes: the task definition references the `:latest` tag, so the next render task pulls the new image
 automatically. The previous image stays in ECR under its digest if you ever need to roll back (retag it as
 `latest`). To confirm which image a render used, ECR → the repository → the image's "Last recorded pull
@@ -192,6 +217,14 @@ time".
    `POST /chatbot-shorts/jobs/<id>/shorts/<shortId>/render`) and watch the next cron tick pick it up the
    same way. That endpoint rejects a short not yet at `ready_for_render`, and rejects any request while
    another short on the same job is still mid-pipeline.
+6. Recording mode: the UI uploads the `.mp4` to S3 first (progress bar), then creates the job. The first
+   cron tick dispatches the ingest task (`step` = `ingesting`, `sources.recording.ingest.taskArn`); later
+   ticks poll it, and its log is in CloudWatch under the render task's log group. A 2 h 25 min recording
+   took about 25 minutes to ingest. The tick that finds it finished fetches the outputs into
+   `data/jobs/<id>/ingest/`, transcribes (skipped when a `.vtt` was uploaded), trims, aligns and cleans in
+   one go - several minutes with speech-to-text. `sources.recording.trim` says what span was chosen and
+   why; the review screen's start/end fields `PATCH /jobs/<id>/trim`, which re-aligns from the stored
+   transcript without touching S3.
 
 ## Before this is anything but a test
 

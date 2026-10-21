@@ -79,3 +79,6 @@ RENDER_ECS_TASK_DEFINITION = os.environ.get("RENDER_ECS_TASK_DEFINITION", "chatb
 RENDER_ECS_SUBNETS = [s for s in os.environ.get("RENDER_ECS_SUBNETS", "").split(",") if s]
 RENDER_ECS_SECURITY_GROUPS = [s for s in os.environ.get("RENDER_ECS_SECURITY_GROUPS", "").split(",") if s]
 RENDER_TIMEOUT_MINUTES = int(os.environ.get("RENDER_TIMEOUT_MINUTES", "40"))
+# Recording-mode ingest (render/ingest.py in the same image): decoding a
+# 2.5-hour 1080p recording at 2 vCPU takes on the order of 25 minutes.
+INGEST_TIMEOUT_MINUTES = int(os.environ.get("INGEST_TIMEOUT_MINUTES", "90"))
